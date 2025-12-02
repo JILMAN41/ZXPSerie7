@@ -1,0 +1,751 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Windows.Forms;
+using SigMahadi_H.Settings;
+using System.Diagnostics;
+using Prj_Capa_Negocio;
+using System.Management;
+using System.Collections;
+using System.Net.NetworkInformation;
+using Prj_Capa_Datos;
+using SigMahadi_H.Configuraciones;
+using Newtonsoft.Json;
+using Prj_Capa_Entidad;
+using System.IO;
+using Prj_Capa_Negocio.CRM;
+using System.Linq;
+using System.Text;
+using Prj_Capa_Negocio.Infrastructure;
+
+namespace SigMahadi_H
+{
+    public partial class LoginForm : RJForms.RJBaseForm
+    {
+        #region -> Constructor
+        int contador = 0;
+        string CrearCodSerieDocSunat;
+        private List<EN_MiEmpresa> EmpDatosIni = new List<EN_MiEmpresa>();
+        #region Métodos de evento
+
+        public LoginForm()
+        {
+            Resolution.autoScaleModeJilman(this);
+            InitializeComponent();
+            
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+
+            AddControlBox();
+            ApplyAppearanceSettings();
+
+            //Agregar una linea
+            var line = new Control();
+            line.Size = new Size(lblDescription.Width - 10, 1);
+            line.BackColor = Color.LightGray;
+            line.Location = new Point(lblDescription.Left + 5, lblTitle.Bottom + 15);
+            this.icoBanner.Controls.Add(line);
+        }
+        #endregion
+
+        private async void LoginForm_Load(object sender, EventArgs e)
+        {
+            var emp1 = new EN_MiEmpresa {
+                Ruc = "20602348157",
+                Nombre = "MAHADI",
+                NombreSIG = "SIG MAHADI",
+                RutaConex = @"\Mahadi_FE.bin",
+                RutaConex2 = @"\Mahadi_FE2.bin",
+            };
+            this.EmpDatosIni.Add(emp1);
+
+            var emp2 = new EN_MiEmpresa
+            {
+                Ruc = "20609578611",
+                Nombre = "FRAMATEC",
+                NombreSIG = "SIG FRAMATEC",
+                RutaConex = @"\Framatec_FE.bin",
+                RutaConex2 = @"\Framatec_FE2.bin",
+            };
+            this.EmpDatosIni.Add(emp2);
+
+            var emp3 = new EN_MiEmpresa
+            {
+                Ruc = "20609759845",
+                Nombre = "HANSTRATEL",
+                NombreSIG = "SIG HANSTRATEL",
+                RutaConex = @"\Hanstratel_FE.bin",
+                RutaConex2 = @"\Hanstratel_FE2.bin",
+            };
+
+            this.EmpDatosIni.Add(emp3);
+            
+            var emp4 = new EN_MiEmpresa
+            {
+                Ruc = "20605365982",
+                Nombre = "INFITEL",
+                NombreSIG = "SIG INFITEL",
+                RutaConex = @"\Infitel_FE.bin",
+                RutaConex2 = @"\Infitel_FE2.bin",
+            };
+            this.EmpDatosIni.Add(emp4);
+
+            this.pnl_validaempresa.Focus();
+            this.txt_RucEmpreaa.Focus();
+            await LocationService.ObtenerUbicacionMejoradaAsync();
+        }
+
+        private void cb_nomSede_Click(object sender, EventArgs e)
+        {
+            if (this.cmb_nomSede.Text.Trim() == "")
+            {
+                cargarNomSede();
+            }
+        }
+
+        private void btnLogin_Click(object sender, EventArgs e)
+        {
+            Login();
+        }
+
+        private void txtPassword_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                Login();
+            }
+        }
+        private void biYoutube_Click(object sender, EventArgs e)
+        { 
+            botonesAccesoRedes(biYoutube.Tag.ToString());
+        }
+        private void biWebPage_Click(object sender, EventArgs e)
+        {
+            botonesAccesoRedes(biWebPage.Tag.ToString());
+        }
+        private void biIntranet_Click(object sender, EventArgs e)
+        {
+            botonesAccesoRedes(biIntranet.Tag.ToString());
+        }
+        private void biFacebook_Click(object sender, EventArgs e)
+        {
+            botonesAccesoRedes(biFacebook.Tag.ToString());
+        }
+
+        private void MainForm_Logout(object sender, FormClosedEventArgs e)
+        {//Evento cuando se cierra el formulario principal.
+            try
+            {
+                if (sender != null)
+                    Logout();
+                else
+                    Application.Exit(); //JILMAN
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("" + ex, "Aviso de Cierrar Ventana Principal", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
+        }
+
+
+        private void cb_empresaLogin_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            if (cmb_empresaLogin.Text.Trim() != "")
+            {
+                btnLogin.Enabled = true;
+            }
+        }
+
+        private void cb_empresaLogin_Click(object sender, EventArgs e)
+        {
+            cargarNomEmpresa();
+        }
+
+        private void btn_Close_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+
+
+
+        private void btn_validaRuc_Click(object sender, EventArgs e)
+        {
+            string rucDigitado = txt_RucEmpreaa.Text.Trim();
+            validarRUC(rucDigitado);
+            if (this.Tag is "SI")
+            {
+                //CARGAR LOGO EMPRESA
+                var ui = new Utilitario();
+                ui.Cargar_Imagen_Empresa(pb_Sig_Login);
+            }
+            else
+            {
+                contador++;
+                RJMessageBox.Show($"RUC NO ESTÁ HABILITADO PARA USAR ESTE PROGRAMA\nSi Se equivocó al Digitar, Corrija y Vuelva a intentar\nLe quedan {3 - contador} intentos", "MENSAJE", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                if (contador == 3)
+                {
+                    this.Close();
+                }
+            }
+
+        }
+
+        private void txt_RucEmpreaa_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                btn_validaRuc_Click(sender, e);
+            }
+        }
+
+        private void btn_validaRuc_Enter(object sender, EventArgs e)
+        {
+            btn_validaRuc.FillColor = Color.Orange;
+        }
+
+        private void btn_validaRuc_Leave(object sender, EventArgs e)
+        {
+            btn_validaRuc.FillColor = Color.FromArgb(((int)(((byte)(128)))), ((int)(((byte)(255)))), ((int)(((byte)(128)))));
+        }
+
+        private void cb_nomSede_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            cargarCodSerieDocSunat();
+
+            if (string.IsNullOrEmpty(CrearCodSerieDocSunat))
+            {
+                MessageBox.Show($"Sede {cmb_nomSede.Text} no tiene Asignada series para Documentos de Venta. Por favor elija otra sede y diríjase al maestro de Sedes y asignarlas", "", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                cmb_nomSede.SelectedIndex = 0;
+                return;
+            }
+        }
+
+
+        #endregion
+
+
+        #region -> Métodos privados
+
+        private void AddControlBox()
+        {//Agregar los botones de control (Maximizar, cerrar y minimizar)
+            this.Controls.Add(this.btnClose);
+            this.Controls.Add(this.btnMinimize);
+            this.btnClose.Height = 20;
+            this.btnClose.Location = new Point(this.Width - btnClose.Width, 0);
+
+            this.btnMinimize.Height = 20;
+            this.btnMinimize.Location = new Point(this.btnClose.Location.X - btnMinimize.Width, 0);
+        }
+        private void ApplyAppearanceSettings()
+        {//Aplicar las propiedades de apariencia de la configuración.
+
+            this.PrimaryForm = true;//Establecer como formulario primario.
+            this.Resizable = false;//Establecer que el formulario no se puede cambiar de tamaño desde los bordes.
+            this.BorderSize = 0;//Quitar el borde.
+            this.BackColor = UIAppearance.BackgroundColor;//Establecer el color de fondo
+
+            if (UIAppearance.Theme == UITheme.Light)//si el tema es CLARO, establecer los botones de maximizar, minimizar y cerrar en negro.
+            {
+                this.btnClose.Image = Properties.Resources.CloseDark;
+                this.btnMaximize.Image = Properties.Resources.MaximizeDark;
+                this.btnMinimize.Image = Properties.Resources.MinimizeDark;
+            }
+        }
+
+        private bool Validar_texto()
+        {
+            var fil = new Frm_Filtro();
+
+            if (this.txt_usu.Text.Trim().Length < 2)
+            {
+                fil.Show(); MessageBox.Show("Ingresa tu Nombre de Usuario", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation); txt_usu.Focus();
+                this.lblMessage.Text = "*Por favor, ingrese su nombre de usuario";
+                this.lblMessage.Visible = true;
+                return false;
+            }
+            if (this.txt_pass.Text.Trim().Length < 2)
+            {
+                fil.Show(); MessageBox.Show("Ingresa tu Clave", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation); txt_pass.Focus();
+                this.lblMessage.Text = "*Por favor, introduzca su contraseña";
+                this.lblMessage.Visible = true;
+                return false;
+            }
+            return true;
+        }
+
+        private bool Validar_combobox()
+        {
+            var fil = new Frm_Filtro();
+
+            if (this.cmb_empresaLogin.Text.Trim().Length < 2) 
+            {
+                fil.Show(); 
+                MessageBox.Show("Selecciona la Empresa", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                this.cmb_empresaLogin.Focus();
+                this.cmb_empresaLogin.DroppedDown = true;
+                return false; 
+            }
+            if (cmb_nomSede.Text.Trim() == "" || cmb_nomSede.Text.Trim() == "Seleccionar Sede") 
+            { 
+                fil.Show(); 
+                MessageBox.Show("Selecciona la Sede", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                this.cmb_nomSede.Focus();
+                this.cmb_nomSede.DroppedDown = true;
+                return false; 
+            }
+
+            return true;
+        }
+
+
+        private void cargarNomEmpresa()
+        {
+            try
+            {
+                var obj = new RN_empresa();
+                var dato = new DataTable();
+                dato = obj.RN_Cargar_cmb_Empresa();
+                this.cmb_empresaLogin.DataSource = null;
+                this.cmb_empresaLogin.Items.Clear();
+                if ((dato is null ? 0 : dato.Rows.Count)>0)
+                {
+                    //DataRow fila1 = dato.NewRow();
+                    //fila1["NomEmpresa"] = "Seleccionar Empresa";
+                    //dato.Rows.InsertAt(fila1, 0);
+                    this.cmb_empresaLogin.ValueMember = "CodEmpresa";
+                    this.cmb_empresaLogin.DisplayMember = "NomEmpresa";
+                    this.cmb_empresaLogin.DataSource = dato;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("" + ex);
+            }
+        }
+
+
+        private void cargarNomSede()
+        {
+            if (cmb_empresaLogin.Text.Trim() != "") 
+            {
+                RN_empresa emp = new RN_empresa();
+                if (emp.RN_Login_registros_inicial_Sede() == true)
+                {
+                    RN_Sedes obj = new RN_Sedes();
+                    DataTable dato = new DataTable();
+                    dato = obj.RN_Mostrar_nomSede();
+                    cmb_nomSede.DataSource = null;
+                    cmb_nomSede.Items.Clear();
+                    try
+                    {
+                        if ((dato is null ? 0 : dato.Rows.Count)>0)
+                        {
+                            DataRow fila1 = dato.NewRow();
+                            fila1["NOMSEDE"] = "Seleccionar Sede";
+                            dato.Rows.InsertAt(fila1, 0);
+
+                            cmb_nomSede.ValueMember = "CODSEDE";
+                            cmb_nomSede.DisplayMember = "NOMSEDE";
+                            cmb_nomSede.DataSource = dato;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("" + ex);
+                    }
+                }
+                else
+                {
+                    Frm_Primera_Sede frm = new Frm_Primera_Sede();
+                    frm.lbl_id_empresa.Text = cmb_empresaLogin.SelectedValue.ToString().Trim();
+                    frm.ShowDialog();
+                }
+            }
+        }
+
+        int veces = 0;
+        private void Login()
+        {
+            try
+            {
+                var obj = new RN_Usuario();
+                var dato = new DataTable();
+
+                string usu = txt_usu.Text.Trim().ToUpper();
+                string pass = txt_pass.Text;
+                string serialPC = Cls_Libreria.SeriePC;
+                string serialMAC = Cls_Libreria.SerialMAC;
+                Cls_Libreria.CodEmpresa = cmb_empresaLogin.SelectedValue.ToString().Trim();
+                Cls_Libreria.NomEmpresa = cmb_empresaLogin.Text.Trim();
+                Cls_Libreria.CodSede = cmb_nomSede.SelectedValue.ToString().Trim();
+                Cls_Libreria.NomSede = cmb_nomSede.GetItemText(cmb_nomSede.SelectedItem).Trim();
+
+                string CodSerieDocSunat = RN_Sedes.RN_Mostrar_CodSerieDocSunat(Cls_Libreria.CodSede);
+                //Se Carga Por Primera Vez
+                if (string.IsNullOrEmpty(CodSerieDocSunat))
+                {
+                    RJMessageBox.Show("No existe serie de Facturación en Maestro Sedes", "ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    Cls_Libreria.CodSerieSunat = CodSerieDocSunat;
+
+                }
+
+                if (Validar_texto() == false) return;
+                if (Validar_combobox() == false) return;
+                if (obj.RN_ValidarVersionSistema(lblVersion.Text.Trim()) is true)
+                {
+
+                    if (obj.RN_LoginPCautorizada(serialPC, serialMAC, usu) == true)
+                    {
+                        if (obj.RN_Login(usu, pass) == true)
+                        {
+                            dato = obj.RN_Buscar_Usuario(usu);
+
+                            if ((dato is null ? 0 : dato.Rows.Count) > 0)
+                            {
+                                DataRow dr = dato.Rows[0];
+                                Cls_Libreria.IdRol = dr["Nivel"].ToString().Trim();
+                                Cls_Libreria.Nombre = dr["NombreCompleto"].ToString().Trim();
+                                if ((dr["Foto"]) != DBNull.Value)
+                                {
+                                    byte[] b = (Byte[])dr["Foto"];
+                                    Cls_Libreria.Foto = b;
+                                }
+                                Cls_Libreria.Rol = dr["Descripcion"].ToString().Trim();
+                                Cls_Libreria.IdUsu = dr["IdUsuario"].ToString().Trim().ToUpper();
+                                Cls_Libreria.DNI = dr["DNI"].ToString().Trim();
+                                Cls_Libreria.IdAcceso = Convert.ToInt32(dr["IdAcceso"].ToString().Trim());
+                                Cls_Libreria.FirstName = dr["Nombres"].ToString().Trim();
+                                Cls_Libreria.LastName = dr["Apellidos"].ToString().Trim();
+                                Cls_Libreria.Mail = dr["Mail"].ToString().Trim();
+                                Cls_Libreria.PhoneNumber = dr["Tele02"].ToString().Trim();
+                                Cls_Libreria.Birthday = Convert.ToDateTime("01/02/1984");
+                                Cls_Libreria.Contrasenia = dr["Clave"].ToString().Trim();
+                                Cls_Libreria.DiaNac = Convert.ToInt16(dr["DiaNac"].ToString().Trim());
+                                Cls_Libreria.MesNac = Convert.ToInt16(dr["MesNac"].ToString().Trim());
+                                Cls_Libreria.zonal = dr["IDZONA"].ToString().Trim();
+                                Cls_Libreria.Hora_IncioLabor = dr["Hora_IncioLabor"].ToString().Trim();
+                                Cls_Libreria.Hora_FinLabor = dr["Hora_FinLabor"].ToString().Trim();
+                                Cls_Libreria.IdEmpleado = dr["IdEmpleado"].ToString().Trim() is "" ? 0 : Convert.ToInt32(dr["IdEmpleado"]);
+                            }
+                            else 
+                            {
+                                MessageBox.Show("No se logró Importar Ningún Dato del Usuario", "ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                Application.Exit();
+                            }
+
+                            // Cargar Id TEAM CRM
+                            var obj2 = new RN_Team_New();
+                            var dato2 = new DataTable();
+
+                            dato2 = obj2.RN_Mostrar_Team_New_CRM(Cls_Libreria.DNI);
+                            if (dato2.Rows.Count > 0)
+                            {
+                                for (int i = 0; i < dato2.Rows.Count; i++)
+                                {
+                                    if (dato2.Rows[i]["Documento"].ToString().Trim() == Cls_Libreria.DNI)
+                                    {
+                                        Cls_Libreria.IdTeam = Convert.ToInt32(dato2.Rows[i]["Id"]);
+                                    }
+                                    else 
+                                    {
+                                        Cls_Libreria.IdTeam = 0;
+                                    }
+                                }
+                            }
+
+                            //Login
+                            //var user = new Models.User().Login(usu, pass);
+                            //Frm_Principal pri = new Frm_Principal();
+                            var mainForm = new MainForm();
+
+                            mainForm.Show();
+                            this.Hide();
+                            //Volver a mostrar el formulario de inicio de sesión y borrar los campos si el formulario principal es cerrado.
+                            try
+                            {
+                                mainForm.FormClosed += new FormClosedEventHandler(MainForm_Logout);
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show("Ocurrió algo al Cerrar la aplicación: " + ex, "ERROR AL CERRAR CESIÓN", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                            }
+                        }
+                        else
+                        {
+                            veces += 1;
+                            if (veces == 3)
+                            {
+                                MessageBox.Show("Ud ha Sobrepasado los Limites permitidos de Intentos", "Advertencia de LOgin", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                                Application.Exit();
+                            }
+                            else
+                            {
+                                //lblMessage.Text = "";
+                                txt_pass.Text = "";
+                                txt_usu.Text = "";
+                                txt_usu.Focus();
+                                MessageBox.Show("el Usuario y clave son Incorrectos O ESTÁ EN ESTADO DESACTIVO, Intentalo nuevamente", "Advertencia de LOgin", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                                lblMessage.Text = "*Nombre de usuario o contraseña incorrecta \n                 va: " + veces + " Intento(s)";
+                                lblMessage.Visible = true;
+                                txt_pass.PasswordChar = true;
+                                txt_pass.PlaceHolderText = "Contraseña";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Está intentando acceder a un sitio PRIVADO y SEGURO, se tomará evidencia de su serie de PC {Cls_Libreria.SeriePC} Y MAC {serialMAC} para la respectiva denuncia", "USTED ESTÁ EN PROBLEMAS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+                else 
+                {
+                    RJMessageBox.Show($"Debe Actualizar una Versión superior de su programa comuníquese con su Área de TI","ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(""+ex);
+            }
+        }
+
+        private void Logout()
+        {//Metodo para cuando se cierra sesion desde el formulario principal.
+            try
+            {
+                txt_pass.Clear();
+                txt_usu.Clear();
+                lblMessage.Visible = false;
+                lblCaption.Select();
+                txt_pass.PasswordChar = true;
+                txt_pass.PlaceHolderText = "Contraseña";
+                Cls_Libreria.Foto = null;
+                this.Show();//Volver a mostrar el formulario de inicio de sesión.
+
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(""+ex,"Aviso de Cerrar Ventana Principal", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        
+        internal void botonesAccesoRedes(string Red)
+        {
+            try
+            {
+                var emp = new RN_empresa();
+                var dt = emp.RN_Cargar_Datos_Empresa();
+                if ((dt is null ? 0 : dt.Rows.Count) > 0)
+                    Process.Start(dt.Rows[0][$"{Red}"].ToString().Trim());
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+        }
+
+        private void registrosInicialesSede()
+        {
+            try
+            {
+                var emp = new RN_empresa();
+                cargarNomEmpresa();
+                if (emp.RN_Login_registros_inicial_Sede() == true)
+                {
+                    cargarNomSede();
+
+                    cmb_empresaLogin.Focus();
+                    ObtenerSerialPC();
+                    ArrayList direccion = obtenerDireccionMac();
+                    if (direccion.Count > 0) 
+                    {
+                        Cls_Libreria.SerialMAC = direccion[0].ToString();
+                        if(direccion.Count > 3)
+                            Cls_Libreria.SerialMAC_WiFi = direccion[3].ToString();
+                    }                    
+                    
+                }
+                else { RJMessageBox.Show("Sede No existe", "AVISO", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("" + ex);
+            }
+        }
+
+        public static void ObtenerSerialPC()
+        {
+            string serial = null;
+
+            // 1) Intento con Win32_PhysicalMedia
+            try
+            {
+                using (var mo = new ManagementObject(@"Win32_PhysicalMedia='\\.\PHYSICALDRIVE0'"))
+                {
+                    serial = mo.Properties["SerialNumber"]?.Value as string;
+                    if (!string.IsNullOrWhiteSpace(serial))
+                    {
+                        Cls_Libreria.SeriePC = serial.Trim();
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignoro y paso al siguiente intento
+            }
+
+            // 2) Intento con Win32_BIOS
+            try
+            {
+                var biosQuery = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_BIOS");
+                foreach (ManagementObject mo in biosQuery.Get())
+                {
+                    serial = mo["SerialNumber"] as string;
+                    if (!string.IsNullOrWhiteSpace(serial))
+                    {
+                        Cls_Libreria.SeriePC = serial.Trim();
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignoro y usaré fallback
+            }
+
+            // 3) Fallback: nombre de la máquina
+            Cls_Libreria.SeriePC = Environment.MachineName;
+        }
+
+
+        //Método que retorna el código MAC
+        public static ArrayList obtenerDireccionMac()
+        {
+            //Colecciones
+            ArrayList direccionesMac = new ArrayList();
+            //Objeto para el adaptador de red de la pc
+            NetworkInterface[] adaptadordeRed = null;
+            //obtener la cantidad de adaptadores de red de la pc
+            adaptadordeRed = NetworkInterface.GetAllNetworkInterfaces();
+
+            //validar que tenemos un adaptador de red eb la pc
+            if (adaptadordeRed != null && adaptadordeRed.Length > 0)
+            {
+                //recorrer los adaptadores de red que tengamos
+                foreach (NetworkInterface interfaces in adaptadordeRed)
+                {
+                    //obtener dirección física de la mac
+                    var direccion = interfaces.GetPhysicalAddress();
+                    byte[] bytes = direccion.GetAddressBytes();
+
+                    //declarar variable para almacenar la dirección MAC
+                    string mac = string.Empty;
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        mac = mac + bytes[i].ToString("x2").ToUpper();
+                        //crear un espacio cada dos pares de caracteres
+                        if (i != bytes.Length - 1)
+                        {
+                            mac = mac + "-";
+                        }
+                    }
+                    direccionesMac.Add(mac);
+                }
+            }
+            return direccionesMac;
+
+        }
+
+
+        private void cargarCodSerieDocSunat()
+        {
+            string codsede = cmb_nomSede.SelectedValue.ToString();
+            string CodSerieDocSunat = RN_Sedes.RN_Mostrar_CodSerieDocSunat(codsede);
+            CrearCodSerieDocSunat = CodSerieDocSunat;
+        }
+
+        private static string _path = Application.StartupPath + @"\connections.json";
+        internal static void SerializeJsonFile(List<EN_StringConnect> stringConnection)
+        {
+            string stringConnectionJson =  JsonConvert.SerializeObject(stringConnection.ToArray(), Formatting.Indented);
+            File.WriteAllText(_path, stringConnectionJson);
+        }
+
+        internal static List<EN_StringConnect> GetConnect(string stringConnect) 
+        {
+            List<EN_StringConnect> list = new List<EN_StringConnect>
+            {
+                new EN_StringConnect
+                {
+                    Default = true,
+                    type = "SQL Server",
+                    connection_string = $"{stringConnect}",
+                    name = "SQL Server Connection"
+                }
+            };
+            return list;
+        }
+
+        private void validarRUC(string RucDigitado)
+        {
+            this.Tag = "";
+
+            foreach (var item in EmpDatosIni) 
+            {
+                if (RucDigitado == item.Ruc)
+                {
+                    if (this.Rb_Claro.Checked is true)
+                    {
+                        BDConexion.nombreEmpresaruta = item.RutaConex;
+                        BDConexion.MHDI= "MHDI_FE";
+                        BDConexion.CLIENTES_DNI= "CLIENTES_DNI_FE";
+                        BDConexion.DATOS_CLIENTES= "DATOS_CLIENTES_FE";
+                        BDConexion.MAESTROS= "MAESTROS_FE";
+                        BDConexion.FRAMATEC= "Framatec_FE";
+                    }
+                    else if (this.Rb_Win.Checked is true) 
+                    {
+                        BDConexion.nombreEmpresaruta = item.RutaConex2;
+                        BDConexion.MHDI = "MHDI_FE2";
+                        BDConexion.CLIENTES_DNI = "CLIENTES_DNI_FE2";
+                        BDConexion.DATOS_CLIENTES = "DATOS_CLIENTES_FE2";
+                        BDConexion.MAESTROS = "MAESTROS_FE2";
+                        BDConexion.FRAMATEC = "Framatec_FE2";
+                    }
+                    CONEXIONMAESTRA.dataBase = "";//BDSISTEMA
+                    registrosInicialesSede();
+                    pnl_validaempresa.Visible = false;
+                    pnl_validaEmpresa2.Visible = false;
+                    Cls_Libreria.Ruc = item.Ruc;
+                    txt_usu.Focus();
+                    lblTitle.Text = item.NombreSIG;
+                    var Listtext = GetConnect(BDConexion.Conectar2());
+                    SerializeJsonFile(Listtext);
+                    this.Tag = "SI";
+                }
+            }
+
+        }
+        #endregion
+
+        #region -> Anulaciones
+
+        protected override void CloseWindow()
+        {//Anular el metodo (Para quitar el cuadro de mensaje si se desea salir de la app ) y simplemente salir de aplicación, Esto es opcional.
+            Application.Exit();//Salir de aplicacíon.
+        }
+        #endregion
+
+        private void txt_RucEmpreaa_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            var ui = new Utilitario();
+            e.KeyChar = Convert.ToChar(ui.Solo_Numeros(e.KeyChar));
+        }
+    }
+}
