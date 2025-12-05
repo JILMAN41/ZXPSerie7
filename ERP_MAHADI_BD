@@ -1,0 +1,1206 @@
+/**********************************************************************
+ ERP_MAHADI – SCRIPT CONSOLIDADO (DB + SCHEMAS + TABLAS BÁSICAS)
+ Versión: 1.0 (arquitectura congelada)
+**********************************************************************/
+
+------------------------------------------------------------
+-- 0. CREACIÓN / CONFIGURACIÓN DE LA BASE DE DATOS
+------------------------------------------------------------
+USE [master];
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = N'ERP_MAHADI')
+BEGIN
+    PRINT '>> Creando base de datos ERP_MAHADI...';
+
+    CREATE DATABASE [ERP_MAHADI]
+    ON PRIMARY
+    (
+        NAME       = N'ERP_MAHADI_DATA',
+        FILENAME   = N'D:\MSSQL\Data\ERP_MAHADI_DATA.mdf', -- ajustar si fuera necesario
+        SIZE       = 102400MB,   -- 100 GB inicial     //SIZE       = 51200MB,   -- 50 GB inicial
+		--MAXSIZE    = UNLIMITED,
+        FILEGROWTH = 10240MB     -- crecimiento 10 GB
+    )
+    LOG ON
+    (
+        NAME       = N'ERP_MAHADI_LOG',
+        FILENAME   = N'D:\MSSQL\Log\ERP_MAHADI_LOG.ldf',
+        SIZE       = 20480MB,    -- 20 GB inicial      //-- 25 GB inicial
+        --MAXSIZE    = 102400MB,  -- 100 GB
+        FILEGROWTH = 2048MB      -- crecimiento 2 GB   //-- 2.5 GB
+    );
+
+    PRINT '>> Base de datos ERP_MAHADI creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> La base de datos ERP_MAHADI ya existe. Se omite CREATE DATABASE.';
+END;
+GO
+
+------------------------------------------------------------
+-- 0.1. OPCIONES DE BASE DE DATOS
+------------------------------------------------------------
+ALTER DATABASE [ERP_MAHADI] SET COMPATIBILITY_LEVEL = 150;  -- SQL 2019
+GO
+
+-- Modelo de recuperación (ya está en FULL pero lo reforzamos)
+ALTER DATABASE [ERP_MAHADI] SET RECOVERY FULL;
+
+-- Aislamiento optimista (evitar bloqueos fuertes)
+ALTER DATABASE [ERP_MAHADI] SET READ_COMMITTED_SNAPSHOT ON;
+ALTER DATABASE [ERP_MAHADI] SET ALLOW_SNAPSHOT_ISOLATION ON;
+GO
+
+-- Opciones ANSI recomendadas para ERP
+ALTER DATABASE [ERP_MAHADI] SET ANSI_NULL_DEFAULT ON;
+ALTER DATABASE [ERP_MAHADI] SET ANSI_NULLS ON;
+ALTER DATABASE [ERP_MAHADI] SET ANSI_PADDING ON;
+ALTER DATABASE [ERP_MAHADI] SET ANSI_WARNINGS ON;
+ALTER DATABASE [ERP_MAHADI] SET ARITHABORT ON;
+ALTER DATABASE [ERP_MAHADI] SET CONCAT_NULL_YIELDS_NULL ON;
+ALTER DATABASE [ERP_MAHADI] SET NUMERIC_ROUNDABORT OFF;
+ALTER DATABASE [ERP_MAHADI] SET QUOTED_IDENTIFIER ON;
+ALTER DATABASE [ERP_MAHADI] SET CURSOR_DEFAULT LOCAL;
+--ALTER DATABASE [ERP_MAHADI] SET RECURSIVE_TRIGGERS OFF;
+GO
+
+-- COLLATION: solo usar en entornos nuevos SIN objetos creados
+-- ALTER DATABASE [ERP_MAHADI] COLLATE Latin1_General_CI_AS;
+-- GO
+
+-- Auto-tuning (si Query Store está disponible/activo)
+--ALTER DATABASE [ERP_MAHADI] SET AUTOMATIC_TUNING (FORCE_LAST_GOOD_PLAN = ON);
+--GO
+
+USE [ERP_MAHADI];
+GO
+
+------------------------------------------------------------
+-- 1. SCHEMAS
+------------------------------------------------------------
+DECLARE @schema SYSNAME;
+
+DECLARE @Schemas TABLE (SchemaName SYSNAME);
+INSERT INTO @Schemas (SchemaName)
+VALUES
+-- MAESTROS / ESTRUCTURA CORPORATIVA
+ ('master')      -- Compañías, sociedades, establecimientos, direcciones
+,('config')      -- Parámetros, catálogos, numeradores
+-- VENTAS / FACTURACIÓN
+,('billing')     -- Puntos de emisión, series, docs electrónicos
+,('sales')       -- Pedidos, ventas, precios
+-- LOGÍSTICA / INVENTARIOS
+,('inventory')   -- Items, almacenes, stock, movimientos
+,('logistics')   -- Guías, transporte, rutas
+-- FINANZAS / CONTABILIDAD
+,('finance')     -- Cobranza, pagos, bancos, conciliaciones
+,('accounting')  -- Asientos, libros, centros de costo / beneficio
+-- RRHH / CRM / INTEGRACIONES
+,('hr')          -- Empleados, perfiles, asistencia
+,('crm')         -- Contactos, campañas, oportunidades
+,('integration') -- Integraciones, staging, ETL
+-- SEGURIDAD / AUDITORÍA
+,('security')    -- Usuarios, roles del ERP (no del SQL)
+,('audit')       -- Auditoría funcional, logs de negocio
+-- COMPARTIDO / UTILIDADES
+,('shared')      -- Tablas/vistas reutilizadas por varios módulos
+
+,('procurement')
+,('production')
+,('tax')
+,('service')
+,('report')
+,('temp')
+,('utility');
+
+
+WHILE EXISTS (SELECT 1 FROM @Schemas)
+BEGIN
+    SELECT TOP 1 @schema = SchemaName FROM @Schemas ORDER BY SchemaName;
+
+    IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = @schema)
+    BEGIN
+        DECLARE @sql NVARCHAR(MAX) = N'CREATE SCHEMA [' + @schema + N'];';
+        EXEC (@sql);
+        PRINT '>> Schema [' + @schema + '] creado.';
+    END
+    ELSE
+    BEGIN
+        PRINT '>> Schema [' + @schema + '] ya existe.';
+    END
+
+    DELETE FROM @Schemas WHERE SchemaName = @schema;
+END
+GO
+
+------------------------------------------------------------
+-- 2. ROLES DE APLICACIÓN
+------------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'erp_admin')
+    CREATE ROLE [erp_admin];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'erp_manager')
+    CREATE ROLE [erp_manager];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'erp_operator')
+    CREATE ROLE [erp_operator];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'erp_viewer')
+    CREATE ROLE [erp_viewer];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'erp_integration')
+    CREATE ROLE [erp_integration];
+GO
+SELECT * FROM sys.database_principals WHERE name = N'erp_admin'
+/* ============================================================
+   2.1 PERMISOS POR SCHEMA (EJEMPLOS BASE)
+   ============================================================ */
+
+-- MASTER (maestros críticos)
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[master] TO [erp_admin];
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[master] TO [erp_manager];
+GRANT SELECT, INSERT ON SCHEMA::[master] TO [erp_operator];
+GRANT SELECT ON SCHEMA::[master] TO [erp_viewer];
+
+-- CONFIG
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[config] TO [erp_admin];
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[config] TO [erp_manager];
+GRANT SELECT ON SCHEMA::[config] TO [erp_viewer];
+
+-- SECURITY: solo admin
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[security] TO [erp_admin];
+
+-- SALES
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[sales] TO [erp_admin];
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[sales] TO [erp_manager];
+GRANT SELECT, INSERT ON SCHEMA::[sales] TO [erp_operator];
+GRANT SELECT ON SCHEMA::[sales] TO [erp_viewer];
+
+-- INVENTORY
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[inventory] TO [erp_admin];
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[inventory] TO [erp_manager];
+GRANT SELECT, INSERT ON SCHEMA::[inventory] TO [erp_operator];
+GRANT SELECT ON SCHEMA::[inventory] TO [erp_viewer];
+
+-- BILLING (SUNAT / facturación)
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[billing] TO [erp_admin];
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[billing] TO [erp_manager];
+GRANT SELECT, INSERT ON SCHEMA::[billing] TO [erp_operator];
+GRANT SELECT ON SCHEMA::[billing] TO [erp_viewer];
+
+-- INTEGRATION: rol especializado
+GRANT SELECT, INSERT, UPDATE ON SCHEMA::[integration] TO [erp_integration];
+
+-- REPORT: solo lectura
+GRANT SELECT ON SCHEMA::[report] TO [erp_viewer];
+GRANT SELECT ON SCHEMA::[report] TO [erp_admin];
+GRANT SELECT ON SCHEMA::[report] TO [erp_manager];
+
+GO
+
+/* ============================================================
+   2.2. USUARIOS DE APLICACIÓN (CAMBIAR PASSWORDS ANTES DE PRODUCCIÓN)
+   ============================================================ */
+
+USE [master];
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'erp_app')
+BEGIN
+    CREATE LOGIN [erp_app] WITH PASSWORD = 'Mah@diApp2024#ErP!X7',
+        CHECK_POLICY = ON,
+        CHECK_EXPIRATION = ON,
+        DEFAULT_DATABASE = [ERP_MAHADI];
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'erp_report')
+BEGIN
+    CREATE LOGIN [erp_report] WITH PASSWORD = 'Mah@diReport2024#R3p!',
+        CHECK_POLICY = ON,
+        CHECK_EXPIRATION = ON,
+        DEFAULT_DATABASE = [ERP_MAHADI];
+END
+GO
+
+USE [ERP_MAHADI];
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'erp_app')
+BEGIN
+    CREATE USER [erp_app] FOR LOGIN [erp_app] WITH DEFAULT_SCHEMA = [master];
+    ALTER ROLE [erp_admin] ADD MEMBER [erp_app];
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'erp_report')
+BEGIN
+    CREATE USER [erp_report] FOR LOGIN [erp_report] WITH DEFAULT_SCHEMA = [report];
+    ALTER ROLE [erp_viewer] ADD MEMBER [erp_report];
+END
+GO
+
+------------------------------------------------------------
+-- 3. TABLAS DE CONFIGURACIÓN (SCHEMA: config)
+------------------------------------------------------------
+
+-- 3.1 GlobalSettings
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'GlobalSettings' AND schema_id = SCHEMA_ID(N'config'))
+BEGIN
+    CREATE TABLE [config].[GlobalSettings](
+        [SettingId]     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_GlobalSettings PRIMARY KEY,
+        [SettingKey]    VARCHAR(100)  NOT NULL UNIQUE,
+        [SettingValue]  NVARCHAR(MAX) NULL,
+        [DataType]      VARCHAR(20)   NOT NULL DEFAULT 'STRING',
+        [Category]      VARCHAR(50)   NOT NULL,
+        [Description]   NVARCHAR(500) NULL,
+        [IsEncrypted]   BIT           NOT NULL DEFAULT 0,
+        [CreatedOn]     DATETIME2(0)  NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn]    DATETIME2(0)  NULL
+    )ON [PRIMARY];
+    PRINT '>> Tabla [config].[GlobalSettings] creada.';
+END
+ELSE
+    PRINT '>> Tabla [config].[GlobalSettings] ya existe.';
+GO
+
+-- 3.2 Catalogs
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Catalogs' AND schema_id = SCHEMA_ID(N'config'))
+BEGIN
+    CREATE TABLE [config].[Catalogs](
+        [CatalogId]    INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Catalogs PRIMARY KEY,
+        [CatalogCode]  VARCHAR(50)   NOT NULL UNIQUE,
+        [CatalogName]  NVARCHAR(100) NOT NULL,
+        [Description]  NVARCHAR(500) NULL,
+        [IsSystem]     BIT           NOT NULL DEFAULT 0,
+        [IsActive]     BIT           NOT NULL DEFAULT 1,
+        [CreatedOn]    DATETIME2(0)  NOT NULL DEFAULT GETUTCDATE()
+    )ON [PRIMARY];
+    PRINT '>> Tabla [config].[Catalogs] creada.';
+END
+ELSE
+    PRINT '>> Tabla [config].[Catalogs] ya existe.';
+GO
+
+-- 3.3 CatalogItems
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'CatalogItems' AND schema_id = SCHEMA_ID(N'config'))
+BEGIN
+    CREATE TABLE [config].[CatalogItems](
+        [ItemId]     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CatalogItems PRIMARY KEY,
+        [CatalogId]  INT NOT NULL,
+        [ItemCode]   VARCHAR(50)   NOT NULL,
+        [ItemName]   NVARCHAR(100) NOT NULL,
+        [ItemValue]  NVARCHAR(200) NULL,
+        [SortOrder]  INT           NOT NULL DEFAULT 0,
+        [IsActive]   BIT           NOT NULL DEFAULT 1,
+        [Metadata]   NVARCHAR(MAX) NULL,
+        [CreatedOn]  DATETIME2(0)  NOT NULL DEFAULT GETUTCDATE(),
+
+        CONSTRAINT UQ_CatalogItem UNIQUE ([CatalogId], [ItemCode]),
+        CONSTRAINT FK_CatalogItems_Catalogs FOREIGN KEY ([CatalogId])
+            REFERENCES [config].[Catalogs]([CatalogId])
+    )ON [PRIMARY];
+    PRINT '>> Tabla [config].[CatalogItems] creada.';
+END
+ELSE
+    PRINT '>> Tabla [config].[CatalogItems] ya existe.';
+GO
+
+------------------------------------------------------------
+-- 4. TABLAS DE AUDITORÍA (SCHEMA: audit)
+------------------------------------------------------------
+
+-- 4.1 ChangeLog
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'ChangeLog' AND schema_id = SCHEMA_ID(N'audit'))
+BEGIN
+    CREATE TABLE [audit].[ChangeLog](
+        [ChangeId]       BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ChangeLog PRIMARY KEY,
+        [TableName]      VARCHAR(128) NOT NULL,
+        [RecordId]       NVARCHAR(100) NOT NULL,
+        [ChangeType]     CHAR(1) NOT NULL, -- I=Insert, U=Update, D=Delete
+        [OldValues]      NVARCHAR(MAX) NULL,
+        [NewValues]      NVARCHAR(MAX) NULL,
+        [ChangedBy]      VARCHAR(100) NULL,
+        [ChangedOn]      DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ClientAddress]  VARCHAR(45)  NULL,
+        [ApplicationName] VARCHAR(100) NULL
+    )ON [PRIMARY];-- luego lo moveremos a FG_COLD
+    PRINT '>> Tabla [audit].[ChangeLog] creada.';
+END
+ELSE
+    PRINT '>> Tabla [audit].[ChangeLog] ya existe.';
+GO
+
+-- 4.2 ErrorLog
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'ErrorLog' AND schema_id = SCHEMA_ID(N'audit'))
+BEGIN
+    CREATE TABLE [audit].[ErrorLog](
+        [ErrorId]        BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ErrorLog PRIMARY KEY,
+        [ErrorTime]      DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [UserName]       VARCHAR(100) NULL,
+        [ErrorNumber]    INT NOT NULL,
+        [ErrorSeverity]  INT NULL,
+        [ErrorState]     INT NULL,
+        [ErrorProcedure] VARCHAR(200) NULL,
+        [ErrorLine]      INT NULL,
+        [ErrorMessage]   NVARCHAR(MAX) NOT NULL,
+        [ClientAddress]  VARCHAR(45) NULL,
+        [AdditionalInfo] NVARCHAR(MAX) NULL
+    )ON [PRIMARY];-- luego lo moveremos a FG_COLD
+    PRINT '>> Tabla [audit].[ErrorLog] creada.';
+END
+ELSE
+    PRINT '>> Tabla [audit].[ErrorLog] ya existe.';
+GO
+
+------------------------------------------------------------
+-- 5. TABLAS DE SEGURIDAD (SCHEMA: security)
+------------------------------------------------------------
+
+-- 5.1 Users
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Users' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[Users](
+        [UserId]            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Users PRIMARY KEY,
+        [UserGuid]          UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+        [Username]          VARCHAR(50)  NOT NULL UNIQUE,
+        [Email]             VARCHAR(100) NOT NULL UNIQUE,
+        [PasswordHash]      VARBINARY(256) NOT NULL,
+        [PasswordSalt]      VARBINARY(128) NOT NULL,
+        [FirstName]         NVARCHAR(50) NOT NULL,
+        [LastName]          NVARCHAR(50) NOT NULL,
+        [IsActive]          BIT NOT NULL DEFAULT 1,
+        [IsSystem]          BIT NOT NULL DEFAULT 0,
+        [MustChangePassword] BIT NOT NULL DEFAULT 0,
+        [LastLogin]         DATETIME2(0) NULL,
+        [FailedAttempts]    INT NOT NULL DEFAULT 0,
+        [LockedUntil]       DATETIME2(0) NULL,
+        [CreatedOn]         DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn]        DATETIME2(0) NULL
+    )ON [PRIMARY];
+    PRINT '>> Tabla [security].[Users] creada.';
+END
+ELSE
+    PRINT '>> Tabla [security].[Users] ya existe.';
+GO
+
+-- 5.2 Roles
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Roles' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[Roles](
+        [RoleId]     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Roles PRIMARY KEY,
+        [RoleCode]   VARCHAR(50)   NOT NULL UNIQUE,
+        [RoleName]   NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [IsSystem]   BIT NOT NULL DEFAULT 0
+    )ON [PRIMARY];
+    PRINT '>> Tabla [security].[Roles] creada.';
+END
+ELSE
+    PRINT '>> Tabla [security].[Roles] ya existe.';
+GO
+
+-- 5.3 UserRoles
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'UserRoles' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[UserRoles](
+        [UserId]     INT NOT NULL,
+        [RoleId]     INT NOT NULL,
+        [AssignedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [AssignedBy] INT NULL,
+        CONSTRAINT PK_UserRoles PRIMARY KEY ([UserId], [RoleId]),
+        CONSTRAINT FK_UserRoles_Users FOREIGN KEY ([UserId]) REFERENCES [security].[Users]([UserId]),
+        CONSTRAINT FK_UserRoles_Roles FOREIGN KEY ([RoleId]) REFERENCES [security].[Roles]([RoleId])
+    ) ON [PRIMARY];
+    PRINT '>> Tabla [security].[UserRoles] creada.';
+END
+ELSE
+    PRINT '>> Tabla [security].[UserRoles] ya existe.';
+GO
+
+------------------------------------------------------------
+-- 6. TABLAS MAESTRAS (SCHEMA: master)
+------------------------------------------------------------
+
+-- 6.0 COMPAÑÍAS (HOLDING / GRUPO)
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'Companies' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+    CREATE TABLE [master].[Companies](
+        [CompanyId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [GroupCode] CHAR(4) NOT NULL UNIQUE,
+        [GroupGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+        [GroupName] NVARCHAR(200) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [Status] CHAR(1) NOT NULL DEFAULT 'A', -- A=Active, I=Inactive
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL
+    );
+END
+GO
+
+-- 6.1 CompanyCodes
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'CompanyCodes' AND schema_id = SCHEMA_ID(N'master'))
+BEGIN
+    CREATE TABLE [master].[CompanyCodes](
+        [CompanyCodeId]	   INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CompanyCodeId PRIMARY KEY,
+        [CompanyCode] CHAR(4) NOT NULL UNIQUE,     -- "1000", "2000"
+		[CompanyId] INT NOT NULL,                  -- Grupo dueño
+		[TaxIdentificationNumber] VARCHAR(11) NOT NULL, -- RUC
+		[LegalName] NVARCHAR(250) NOT NULL,
+        [TradeName] NVARCHAR(250) NULL,
+        [ChartOfAccounts] VARCHAR(4) NOT NULL DEFAULT 'INT',
+        --[TimeZoneId]       VARCHAR(50)  NOT NULL DEFAULT 'America/Lima',
+        [CountryCode] CHAR(2) NOT NULL DEFAULT 'PE',
+        [CurrencyCode] CHAR(3) NOT NULL DEFAULT 'PEN',
+        [LanguageCode] CHAR(2) NOT NULL DEFAULT 'ES',
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',
+        --[CreatedBy]        VARCHAR(50)  NOT NULL DEFAULT 'SYSTEM',
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        --[ModifiedBy]       VARCHAR(50)  NULL,
+        [ModifiedOn] DATETIME2(0) NULL,
+
+		CONSTRAINT [UQ_CompanyCode_TaxId] UNIQUE ([TaxIdentificationNumber]),
+        FOREIGN KEY ([CompanyId]) REFERENCES [master].[Companies]([CompanyId])
+    );
+
+    PRINT '>> Tabla [master].[CompanyCodes] creada.';
+END
+ELSE
+    PRINT '>> Tabla [master].[CompanyCodes] ya existe.';
+GO
+
+-- PLANTAS
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'Plants' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+    CREATE TABLE [master].[Plants](
+        [PlantId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [PlantCode] CHAR(4) NOT NULL,        -- "PE01"
+        [CompanyCode] CHAR(4) NOT NULL,
+        [PlantName] NVARCHAR(100) NOT NULL,
+        [PlantType] CHAR(2) NOT NULL DEFAULT 'MF', -- MF, DC, SA...
+        [AddressId] INT NULL,
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',
+        [StartDate] DATE NOT NULL DEFAULT CAST(GETUTCDATE() AS DATE),
+        [EndDate] DATE NULL,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL,
+
+        CONSTRAINT [UQ_Plant_Code] UNIQUE ([CompanyCode], [PlantCode]),
+        FOREIGN KEY ([AddressId]) REFERENCES [master].[Addresses]([AddressId])
+    );
+END
+GO
+
+--  ORGANIZACIONES DE VENTAS
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'SalesOrganizations' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+    CREATE TABLE [master].[SalesOrganizations](
+        [SalesOrgId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [SalesOrgCode] CHAR(4) NOT NULL UNIQUE,-- "PE01"
+        [CompanyCode] CHAR(4) NOT NULL,
+        [Name] NVARCHAR(150) NOT NULL,
+        --[DistributionChannel] CHAR(2) NOT NULL DEFAULT '01',
+        --[Division] CHAR(2) NOT NULL DEFAULT '00',
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL,
+
+        FOREIGN KEY ([CompanyCode]) REFERENCES [master].[CompanyCodes]([CompanyCode])
+		--CONSTRAINT [UQ_SalesOrg_Context] UNIQUE ([CompanyCode], [SalesOrgCode], [DistributionChannel], [Division])
+    );
+END
+GO
+
+-- CENTROS DE BENEFICIO
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'ProfitCenters' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+    CREATE TABLE [master].[ProfitCenters](
+        [ProfitCenterId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [ProfitCenterCode] CHAR(10) NOT NULL UNIQUE,
+        [CompanyCode] CHAR(4) NOT NULL,
+        [ProfitCenterName] NVARCHAR(100) NOT NULL,
+        [ControllingArea] CHAR(4) NOT NULL DEFAULT '1000',
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL,
+
+        FOREIGN KEY ([CompanyCode]) REFERENCES [master].[CompanyCodes]([CompanyCode])
+    );
+END
+GO
+
+-- 6.2 EstablishmentTypes
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'EstablishmentTypes' AND schema_id = SCHEMA_ID(N'master'))
+BEGIN
+    CREATE TABLE [master].[EstablishmentTypes](
+        [TypeId]      INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_EstablishmentTypes PRIMARY KEY,
+        [TypeCode] VARCHAR(20) NOT NULL UNIQUE,
+        [Name] NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [IconClass] VARCHAR(50) NULL,
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [SortOrder] INT NOT NULL DEFAULT 0,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+    );
+    PRINT '>> Tabla [master].[EstablishmentTypes] creada.';
+END
+ELSE
+    PRINT '>> Tabla [master].[EstablishmentTypes] ya existe.';
+GO
+
+-- 6.3 EstablishmentStatuses
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'EstablishmentStatuses' AND schema_id = SCHEMA_ID(N'master'))
+BEGIN
+    CREATE TABLE [master].[EstablishmentStatuses](
+        [StatusId]    INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_EstablishmentStatuses PRIMARY KEY,
+        [StatusCode] VARCHAR(20) NOT NULL UNIQUE,-- ACTIVE, INACTIVE...
+        [Name] NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [ColorCode] VARCHAR(7) NULL,
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [SortOrder] INT NOT NULL DEFAULT 0,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE()
+    );
+    PRINT '>> Tabla [master].[EstablishmentStatuses] creada.';
+END
+ELSE
+    PRINT '>> Tabla [master].[EstablishmentStatuses] ya existe.';
+GO
+
+-- 6.4 Addresses
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Addresses' AND schema_id = SCHEMA_ID(N'master'))
+BEGIN
+    CREATE TABLE [master].[Addresses](
+        [AddressId]     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Addresses PRIMARY KEY,
+        [AddressGuid]   UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+        -- Estructura internacional
+        [AddressLine1]  NVARCHAR(200) NOT NULL,
+        [AddressLine2]  NVARCHAR(200) NULL,
+        [AddressLine3] NVARCHAR(100) NULL,
+        [City] NVARCHAR(50) NOT NULL,
+        [StateProvince] NVARCHAR(50) NULL,
+        [PostalCode] VARCHAR(20) NULL,
+        [CountryCode]   CHAR(2)   NOT NULL DEFAULT 'PE',
+		-- Códigos estándar
+        [ISOCountryCode] CHAR(2) NULL,
+        [RegionCode] VARCHAR(10) NULL,
+        -- Coordenadas
+        [Latitude] DECIMAL(10,8) NULL,
+        [Longitude] DECIMAL(11,8) NULL,
+		-- Contacto
+        [Phone] VARCHAR(30) NULL,
+        [Fax] VARCHAR(30) NULL,
+        [Email] VARCHAR(100) NULL,
+		-- Reference
+        [Reference]     NVARCHAR(200) NULL,
+		-- Auditoría UTC
+        [CreatedBy]     VARCHAR(50)  NOT NULL DEFAULT 'SYSTEM',
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedBy]     VARCHAR(50) NULL,
+        [ModifiedOn] DATETIME2(0) NULL
+    );
+    CREATE INDEX [IX_Addresses_CountryCity] 
+        ON [master].[Addresses]([CountryCode], [City]);
+
+    CREATE INDEX [IX_Addresses_PostalCode] 
+        ON [master].[Addresses]([CountryCode], [PostalCode]);
+    -- Índice geoespacial si hay coordenadas
+    IF COLUMNPROPERTY(OBJECT_ID('[master].[Addresses]'), 'Latitude', 'AllowsNull') IS NOT NULL
+    BEGIN
+        CREATE SPATIAL INDEX [IX_Addresses_Geography] 
+        ON [master].[Addresses]([geography])
+        USING GEOGRAPHY_GRID
+        WITH (GRIDS = (HIGH, HIGH, HIGH, HIGH), CELLS_PER_OBJECT = 16);
+    END
+    PRINT '>> Tabla [master].[Addresses] creada.';
+END
+ELSE
+    PRINT '>> Tabla [master].[Addresses] ya existe.';
+GO
+
+-- 6.5 Establishments
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Establishments' AND schema_id = SCHEMA_ID(N'master'))
+BEGIN
+    CREATE TABLE [master].[Establishments](
+        [EstablishmentId]   INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Establishments PRIMARY KEY,
+        [EstablishmentGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+
+        -- Identificación
+        [EstablishmentCode] CHAR(4)      NOT NULL,
+        [CompanyCode]       CHAR(4)      NOT NULL,
+        [Name]              NVARCHAR(150) NOT NULL,
+        [CommercialName]    NVARCHAR(200) NULL,
+
+        -- Clasificación
+        [EstablishmentTypeId] INT NOT NULL,
+        [SunatEstablishmentCode] CHAR(4) NULL,
+        [IsFiscalDomicile]   BIT NOT NULL DEFAULT 0,
+
+        -- Ubicación
+        [AddressId]    INT NOT NULL,
+        [TimeZoneId]   VARCHAR(50) NOT NULL DEFAULT 'America/Lima',
+
+        -- Configuración por defecto (placeholders para futuro)
+        [DefaultPlantId]        INT NULL,
+        [DefaultSalesOrgId]     INT NULL,
+        [DefaultProfitCenterId] INT NULL,
+
+        -- Estado
+        [StatusId]      INT  NOT NULL,
+        [OpeningDate]   DATE NOT NULL DEFAULT CAST(GETUTCDATE() AS DATE),
+        [ClosingDate]   DATE NULL,
+        [ClosingReason] NVARCHAR(500) NULL,
+
+        -- Capacidades
+        [HasPointOfSale]   BIT NOT NULL DEFAULT 0,
+        [HasWarehouse]     BIT NOT NULL DEFAULT 0,
+        [HasServiceCenter] BIT NOT NULL DEFAULT 0,
+        [MaxCapacity]      INT NULL,
+        [OperatingHours]   NVARCHAR(500) NULL,
+
+        -- Auditoría
+        [CreatedBy]   VARCHAR(50)  NOT NULL DEFAULT 'SYSTEM',
+        [CreatedOn]   DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedBy]  VARCHAR(50)  NULL,
+        [ModifiedOn]  DATETIME2(0) NULL,
+        [Version]     ROWVERSION   NOT NULL,
+		
+		-- Constraints
+        CONSTRAINT UQ_Establishment_Code
+            UNIQUE ([CompanyCode], [EstablishmentCode]),
+        -- IMPORTANTE: sin WHERE, la constraint ya es válida.
+        CONSTRAINT [UQ_Establishment_SunatCode]
+            UNIQUE ([CompanyCode], [SunatEstablishmentCode]),
+
+        CONSTRAINT CHK_Establishment_Dates
+            CHECK ([ClosingDate] IS NULL OR [ClosingDate] > [OpeningDate]),
+
+        -- Foreign Keys
+        CONSTRAINT FK_Establishments_CompanyCodes FOREIGN KEY ([CompanyCode]) REFERENCES [master].[CompanyCodes]([CompanyCode]),
+        CONSTRAINT FK_Establishments_AddressId FOREIGN KEY ([AddressId]) REFERENCES [master].[Addresses]([AddressId]),
+        CONSTRAINT FK_Establishments_PlantId FOREIGN KEY ([DefaultPlantId]) REFERENCES [master].[Plants]([PlantId]),
+        CONSTRAINT FK_Establishments_SalesOrgId FOREIGN KEY ([DefaultSalesOrgId]) REFERENCES [master].[SalesOrganizations]([SalesOrgId]),
+        CONSTRAINT FK_Establishments_ProfitCenterId FOREIGN KEY ([DefaultProfitCenterId]) REFERENCES [master].[ProfitCenters]([ProfitCenterId]),
+        CONSTRAINT FK_Establishments_Type FOREIGN KEY ([EstablishmentTypeId]) REFERENCES [master].[EstablishmentTypes]([TypeId]),
+        CONSTRAINT FK_Establishments_Status FOREIGN KEY ([StatusId]) REFERENCES [master].[EstablishmentStatuses]([StatusId])
+
+    );
+
+    PRINT '>> Tabla [master].[Establishments] creada.';
+END
+ELSE
+    PRINT '>> Tabla [master].[Establishments] ya existe.';
+GO
+
+-- Índices de soporte para Establishments
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_FiscalDomicile_Active' AND object_id = OBJECT_ID(N'[master].[Establishments]'))
+BEGIN
+    CREATE UNIQUE INDEX [IX_FiscalDomicile_Active]
+    ON [master].[Establishments]([CompanyCode])
+    WHERE [IsFiscalDomicile] = 1;
+    PRINT '>> Índice IX_FiscalDomicile_Active creado.';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Establishments_Company_Status' AND object_id = OBJECT_ID(N'[master].[Establishments]'))
+BEGIN
+    CREATE INDEX [IX_Establishments_Company_Status]
+    ON [master].[Establishments]([CompanyCode], [StatusId])
+    INCLUDE ([EstablishmentCode], [Name]);
+    PRINT '>> Índice IX_Establishments_Company_Status creado.';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Establishments_Type_Status' AND object_id = OBJECT_ID(N'[master].[Establishments]'))
+BEGIN
+    CREATE INDEX [IX_Establishments_Type_Status] 
+    ON [master].[Establishments]([EstablishmentTypeId], [StatusId])
+    INCLUDE ([EstablishmentCode], [Name]);
+    PRINT '>> Índice IX_Establishments_Type_Status creado.';
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Establishments_Location' AND object_id = OBJECT_ID(N'[master].[Establishments]'))
+BEGIN
+    CREATE INDEX [IX_Establishments_Location]
+    ON [master].[Establishments]([AddressId])
+    INCLUDE ([EstablishmentCode], [Name], [CompanyCode]);
+    PRINT '>> Índice IX_Establishments_Location creado.';
+END
+GO
+
+
+/* ============================================================
+   7. BILLING / PUNTOS DE EMISIÓN
+   ============================================================ */
+
+-- 7.1 TIPOS DE PUNTO DE EMISIÓN
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'EmissionPointTypes' AND schema_id = SCHEMA_ID('billing'))
+BEGIN
+    CREATE TABLE [billing].[EmissionPointTypes](
+        [TypeId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [TypeCode] VARCHAR(20) NOT NULL UNIQUE,
+        [Name] NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [IsPointOfSale] BIT NOT NULL DEFAULT 0,
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE()
+    );
+
+    INSERT INTO [billing].[EmissionPointTypes] 
+    ([TypeCode], [Name], [Description], [IsPointOfSale]) VALUES
+    ('POS', 'Punto de Venta', 'Caja registradora / terminal', 1),
+    ('WEB', 'E-commerce', 'Tienda en línea', 1),
+    ('MOBILE', 'App Móvil', 'Aplicación móvil', 1),
+    ('KIOSK', 'Kiosco', 'Terminal autoservicio', 1),
+    ('BACKOFFICE', 'Oficina', 'Emisión administrativa', 0),
+    ('WAREHOUSE', 'Almacén', 'Emisión desde almacén', 0);
+END
+GO
+
+-- 7.2 PUNTOS DE EMISIÓN
+IF NOT EXISTS (SELECT * FROM sys.tables 
+               WHERE name = 'EmissionPoints' AND schema_id = SCHEMA_ID('billing'))
+BEGIN
+    CREATE TABLE [billing].[EmissionPoints](
+        [EmissionPointId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [EmissionPointGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+        [EstablishmentId] INT NOT NULL,
+        [EmissionPointCode] CHAR(4) NOT NULL,
+        [EmissionPointTypeId] INT NOT NULL,
+        [Description] NVARCHAR(150) NULL,
+        [DeviceId] VARCHAR(100) NULL,
+        [PrinterName] VARCHAR(100) NULL,
+
+        -- Configuración
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [AllowElectronic] BIT NOT NULL DEFAULT 1,
+        [AllowPrint] BIT NOT NULL DEFAULT 0,
+        [RequireSupervisor] BIT NOT NULL DEFAULT 0,
+
+        -- Auditoría
+        [ActivationDate] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [DeactivationDate] DATETIME2(0) NULL,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL,
+
+        CONSTRAINT [UQ_EmissionPoint_Code] 
+            UNIQUE ([EstablishmentId], [EmissionPointCode]),
+
+        FOREIGN KEY ([EstablishmentId]) 
+            REFERENCES [master].[Establishments]([EstablishmentId]),
+        FOREIGN KEY ([EmissionPointTypeId]) 
+            REFERENCES [billing].[EmissionPointTypes]([TypeId])
+    );
+
+    CREATE INDEX [IX_EmissionPoints_Establishment_Active] 
+        ON [billing].[EmissionPoints]([EstablishmentId])
+        INCLUDE ([EmissionPointCode],[EmissionPointTypeId]);
+END
+GO
+
+-- TIPOS DE DOCUMENTO SUNAT
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'DocumentTypes' AND schema_id = SCHEMA_ID('billing'))
+BEGIN
+    CREATE TABLE [billing].[DocumentTypes](
+        [DocumentTypeId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [SunatCode] CHAR(2) NOT NULL UNIQUE, -- "01", "03", "07", "08"
+        [InternalCode] VARCHAR(15) NOT NULL UNIQUE, -- "FACTURA", "BOLETA"
+        [Name] NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [Prefix] CHAR(2) NOT NULL, -- "F", "B", "FC", "FD"
+        [IsElectronic] BIT NOT NULL DEFAULT 1,
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE()
+    );
+    
+    INSERT INTO [billing].[DocumentTypes] 
+    ([SunatCode], [InternalCode], [Name], [Prefix], [Description]) VALUES
+    ('01', 'FACTURA', 'Factura Electrónica', 'F', 'Factura a clientes'),
+    ('03', 'BOLETA', 'Boleta de Venta', 'B', 'Boleta de venta'),
+    ('07', 'NOTA_CREDITO', 'Nota de Crédito', 'FC', 'Nota de crédito'),
+    ('08', 'NOTA_DEBITO', 'Nota de Débito', 'FD', 'Nota de débito');
+END
+GO 
+
+-- ESTADOS DE SERIE DOCUMENTARIA
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'DocumentSeriesStatuses' AND schema_id = SCHEMA_ID('billing'))
+BEGIN
+    CREATE TABLE [billing].[DocumentSeriesStatuses](
+        [StatusId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [StatusCode] VARCHAR(20) NOT NULL UNIQUE,
+        [Name] NVARCHAR(100) NOT NULL,
+        [Description] NVARCHAR(500) NULL,
+        [AllowsNumbering] BIT NOT NULL DEFAULT 1,
+        [IsActive] BIT NOT NULL DEFAULT 1,
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE()
+    );
+    
+    INSERT INTO [billing].[DocumentSeriesStatuses] 
+    ([StatusCode], [Name], [Description], [AllowsNumbering]) VALUES
+    ('ACTIVE', 'Activa', 'Serie activa para emisión', 1),
+    ('SUSPENDED', 'Suspendida', 'Serie temporalmente suspendida', 0),
+    ('EXHAUSTED', 'Agotada', 'Serie ha alcanzado su límite', 0),
+    ('CANCELLED', 'Anulada', 'Serie cancelada por SUNAT', 0),
+    ('EXPIRED', 'Vencida', 'Serie vencida por fecha', 0);
+END
+GO
+
+-- 4.5. SERIES DOCUMENTARIAS
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'DocumentSeries' AND schema_id = SCHEMA_ID('billing'))
+BEGIN
+    CREATE TABLE [billing].[DocumentSeries](
+        [SeriesId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+        [SeriesGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+        [EmissionPointId] INT NOT NULL,
+        [DocumentTypeId] INT NOT NULL,
+        [Series] CHAR(4) NOT NULL,
+        
+        -- Autorización SUNAT
+        [AuthorizationNumber] VARCHAR(30) NULL,
+        [AuthorizationDate] DATE NULL,
+        [AuthorizationValidFrom] DATE NULL,
+        [AuthorizationValidTo] DATE NULL,
+        
+        -- Control numérico
+        [SequenceName] AS ('SEQ_Series_' + CAST([SeriesId] AS VARCHAR(10))) PERSISTED,
+        [CurrentNumber] INT NOT NULL DEFAULT 0,
+        [LastUsedDate] DATETIME2(0) NULL,
+        
+        -- Rangos
+        [RangeStart] INT NULL,
+        [RangeEnd] INT NULL,
+        
+        -- Estado
+        [StatusId] INT NOT NULL,
+        
+        -- Configuración
+        [IsElectronic] BIT NOT NULL DEFAULT 1,
+        [IsContingency] BIT NOT NULL DEFAULT 0,
+        [AllowManual] BIT NOT NULL DEFAULT 0,
+        
+        -- Auditoría
+        [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn] DATETIME2(0) NULL,
+        
+        -- Constraints
+        CONSTRAINT [UQ_DocumentSeries] UNIQUE ([EmissionPointId], [DocumentTypeId], [Series]),
+        CONSTRAINT [CHK_Series_Format] CHECK ([Series] LIKE '[A-Z][0-9][0-9][0-9]' OR [Series] LIKE '[A-Z][A-Z][0-9][0-9]'),
+        CONSTRAINT [CHK_Series_Range] CHECK ([RangeEnd] IS NULL OR [RangeEnd] > [RangeStart]),
+        
+        FOREIGN KEY ([EmissionPointId]) REFERENCES [billing].[EmissionPoints]([EmissionPointId]),
+        FOREIGN KEY ([DocumentTypeId]) REFERENCES [billing].[DocumentTypes]([DocumentTypeId]),
+        FOREIGN KEY ([StatusId]) REFERENCES [billing].[DocumentSeriesStatuses]([StatusId])
+        
+    );
+
+		-- Opción A: crear con la variable (SQL Server lo materializa como constante)
+		CREATE NONCLUSTERED INDEX [IX_DocumentSeries_Active]
+		ON [billing].[DocumentSeries] ([EmissionPointId], [DocumentTypeId])
+		INCLUDE ([Series], [CurrentNumber])
+		WHERE [StatusId] = 'ACTIVE';
+END
+GO
+
+
+-- ============================================
+--  PROCEDURES Y FUNCTIONS
+-- ============================================
+-- PROCEDURE PARA GENERACIÓN DE NÚMEROS CONCURRENTE-SAFE
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[billing].[usp_GetNextDocumentNumber]') AND type IN (N'P', N'PC'))
+    DROP PROCEDURE [billing].[usp_GetNextDocumentNumber];
+GO
+
+CREATE PROCEDURE [billing].[usp_GetNextDocumentNumber]
+    @SeriesId INT,
+    @NewNumber INT OUTPUT,
+    @DocumentNumber VARCHAR(20) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    
+    DECLARE @ErrorMessage NVARCHAR(4000);
+    
+    BEGIN TRANSACTION;
+    
+    BEGIN TRY
+        -- Bloqueo exclusivo en la serie
+        SELECT @NewNumber = [CurrentNumber] + 1
+        FROM [billing].[DocumentSeries] WITH (UPDLOCK, ROWLOCK)
+        WHERE [SeriesId] = @SeriesId
+            AND [StatusId] = (SELECT StatusId FROM [billing].[DocumentSeriesStatuses] WHERE StatusCode = 'ACTIVE')
+            AND ([RangeEnd] IS NULL OR [CurrentNumber] < [RangeEnd]);
+        
+        IF @NewNumber IS NULL
+        BEGIN
+            -- Verificar razón del fallo
+            IF NOT EXISTS (SELECT 1 FROM [billing].[DocumentSeries] WHERE [SeriesId] = @SeriesId)
+                SET @ErrorMessage = 'Serie no encontrada';
+            ELSE IF EXISTS (SELECT 1 FROM [billing].[DocumentSeries] ds 
+                          INNER JOIN [billing].[DocumentSeriesStatuses] dss ON ds.StatusId = dss.StatusId
+                          WHERE ds.SeriesId = @SeriesId AND dss.AllowsNumbering = 0)
+                SET @ErrorMessage = 'Serie no permite numeración (inactiva/suspendida)';
+            ELSE IF EXISTS (SELECT 1 FROM [billing].[DocumentSeries] 
+                          WHERE [SeriesId] = @SeriesId 
+                          AND [RangeEnd] IS NOT NULL 
+                          AND [CurrentNumber] >= [RangeEnd])
+                SET @ErrorMessage = 'Serie agotada (límite alcanzado)';
+            ELSE
+                SET @ErrorMessage = 'No se puede generar número';
+                
+            THROW 50000, @ErrorMessage, 1;
+        END;
+        
+        -- Obtener serie para formatear
+        DECLARE @Series CHAR(4);
+        SELECT @Series = [Series] 
+        FROM [billing].[DocumentSeries] 
+        WHERE [SeriesId] = @SeriesId;
+        
+        -- Formatear número SUNAT
+        SET @DocumentNumber = @Series + '-' + RIGHT('00000000' + CAST(@NewNumber AS VARCHAR(8)), 8);
+        
+        -- Actualizar
+        UPDATE [billing].[DocumentSeries]
+        SET [CurrentNumber] = @NewNumber,
+            [LastUsedDate] = GETUTCDATE(),
+            [ModifiedOn] = GETUTCDATE()
+        WHERE [SeriesId] = @SeriesId;
+        
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRANSACTION;
+        
+        DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+        DECLARE @ErrorState INT = ERROR_STATE();
+        DECLARE @ErrorNumber INT = ERROR_NUMBER();
+        
+        SET @ErrorMessage = ERROR_MESSAGE();
+        
+        -- Log detallado
+        INSERT INTO [config].[ErrorLog] ([ProcedureName], [ErrorMessage], [ErrorNumber], [ErrorSeverity], [ErrorState])
+        VALUES ('usp_GetNextDocumentNumber', @ErrorMessage, @ErrorNumber, @ErrorSeverity, @ErrorState);
+        
+        THROW;
+    END CATCH
+END;
+GO
+
+-- FUNCIÓN PARA VALIDAR DOMICILIO FISCAL
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[master].[ufn_ValidateFiscalDomicile]') AND type IN (N'FN', N'IF', N'TF', N'FS', N'FT'))
+    DROP FUNCTION [master].[ufn_ValidateFiscalDomicile];
+GO
+
+CREATE FUNCTION [master].[ufn_ValidateFiscalDomicile]
+(
+    @CompanyCode CHAR(4),
+    @EstablishmentId INT
+)
+RETURNS BIT
+AS
+BEGIN
+    DECLARE @IsValid BIT = 1;
+    
+    -- Verificar si ya existe domicilio fiscal activo
+    IF EXISTS (
+        SELECT 1 
+        FROM [master].[Establishments] e
+        INNER JOIN [master].[EstablishmentStatuses] es ON e.StatusId = es.StatusId
+        WHERE e.CompanyCode = @CompanyCode
+            AND e.EstablishmentId != @EstablishmentId
+            AND e.IsFiscalDomicile = 1
+            AND es.StatusCode = 'ACTIVE'
+    )
+    BEGIN
+        SET @IsValid = 0;
+    END
+    
+    RETURN @IsValid;
+END;
+GO
+
+
+-- ============================================
+-- 7. TRIGGERS DE INTEGRIDAD
+-- ============================================
+-- TRIGGER PARA VALIDAR DOMICILIO FISCAL
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[master].[trg_Establishments_FiscalDomicile]') AND type = 'TR')
+    DROP TRIGGER [master].[trg_Establishments_FiscalDomicile];
+GO
+
+CREATE TRIGGER [master].[trg_Establishments_FiscalDomicile]
+ON [master].[Establishments]
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    -- Solo validar si se está marcando como domicilio fiscal
+    IF UPDATE([IsFiscalDomicile])
+    BEGIN
+        DECLARE @CompanyCode CHAR(4);
+        DECLARE @EstablishmentId INT;
+        DECLARE @IsFiscalDomicile BIT;
+        
+        SELECT @CompanyCode = CompanyCode, 
+               @EstablishmentId = EstablishmentId,
+               @IsFiscalDomicile = IsFiscalDomicile
+        FROM inserted;
+        
+        IF @IsFiscalDomicile = 1
+        BEGIN
+            IF [master].[ufn_ValidateFiscalDomicile](@CompanyCode, @EstablishmentId) = 0
+            BEGIN
+                RAISERROR('Ya existe un domicilio fiscal activo para esta compañía.', 16, 1);
+                ROLLBACK TRANSACTION;
+                RETURN;
+            END
+        END
+    END
+END;
+GO
+
+-- NOTA: Trigger opcional para reforzar la regla en BD.
+-- Recomendado manejarlo desde la capa ERP; si se desea, se puede
+-- reactivar el trigger que ya tienes definido.
+
+------------------------------------------------------------
+-- 8. PROCEDIMIENTO DE INICIALIZACIÓN (utility.usp_InitializeDatabase)
+------------------------------------------------------------
+IF OBJECT_ID(N'[utility].[usp_InitializeDatabase]', N'P') IS NOT NULL
+    DROP PROCEDURE [utility].[usp_InitializeDatabase];
+GO
+
+CREATE PROCEDURE [utility].[usp_InitializeDatabase]
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRANSACTION;
+
+    --------------------------------------------------------
+    -- 8.1 Catálogos del sistema (solo si no existen)
+    --------------------------------------------------------
+    IF NOT EXISTS (SELECT 1 FROM [config].[Catalogs] WHERE CatalogCode = 'ESTABLISHMENT_TYPES')
+    BEGIN
+        INSERT INTO [config].[Catalogs] (CatalogCode, CatalogName, IsSystem, [Description])
+        VALUES
+        ('ESTABLISHMENT_TYPES',  N'Tipos de Establecimiento', 1, N'Tipos de sedes/sucursales'),
+        ('ESTABLISHMENT_STATUS', N'Estados de Establecimiento', 1, N'Estados operativos'),
+        ('DOCUMENT_TYPES',       N'Tipos de Documento', 1, N'Tipos de documentos SUNAT'),
+        ('EMISSION_POINT_TYPES', N'Tipos de Punto de Emisión', 1, N'Tipos de puntos de emisión'),
+        ('CURRENCIES',           N'Monedas', 1, N'Monedas soportadas'),
+        ('COUNTRIES',            N'Países', 1, N'Países del mundo');
+    END;
+
+    --------------------------------------------------------
+    -- 8.2 Estados de establecimiento base
+    --------------------------------------------------------
+    IF NOT EXISTS (SELECT 1 FROM [master].[EstablishmentStatuses])
+    BEGIN
+		INSERT INTO [master].[EstablishmentStatuses]
+        ([StatusCode],[Name],[Description],[ColorCode],[SortOrder])
+    VALUES
+        ('ACTIVE', 'Activo', 'Establecimiento operativo', '#10B981', 1),
+        ('INACTIVE', 'Inactivo', 'Establecimiento no operativo', '#6B7280', 2),
+        ('UNDER_CONSTRUCTION', 'En Construcción', 'En fase de implementación', '#F59E0B', 3),
+        ('TEMPORARILY_CLOSED', 'Cerrado Temporalmente', 'Cierre temporal por mantenimiento', '#F97316', 4),
+        ('PERMANENTLY_CLOSED', 'Cerrado Permanente', 'Cierre definitivo', '#EF4444', 5);
+    END;
+
+    --------------------------------------------------------
+    -- 8.3 Tipos de establecimiento base
+    --------------------------------------------------------
+    IF NOT EXISTS (SELECT 1 FROM [master].[EstablishmentTypes])
+    BEGIN
+	    INSERT INTO [master].[EstablishmentTypes] 
+        ([TypeCode],[Name],[Description],[SortOrder])
+    VALUES
+        ('HEADQUARTERS', 'Matriz / Casa Central', 'Sede principal de la empresa(domicilio fiscal)', 1),
+        ('BRANCH', 'Sucursal Comercial', 'Sucursal con atención al público', 2),
+        ('RETAIL_STORE', 'Tienda Retail', 'Punto de venta minorista', 3),
+        ('WAREHOUSE', 'Almacén / Depósito', 'Centro de almacenamiento', 4),
+        ('FACTORY', 'Planta / Fábrica', 'Centro de producción', 5),
+        ('SERVICE_CENTER', 'Centro de Servicio', 'Servicio técnico o atención', 6),
+        ('LOGISTICS_CENTER', 'Centro Logístico', 'Distribución y logística', 7),
+        ('ADMIN_OFFICE', 'Oficina Administrativa', 'Oficinas administrativas', 8);
+    END;
+
+    --------------------------------------------------------
+    -- 8.4 Usuario administrador de la ERP
+    --------------------------------------------------------
+    IF NOT EXISTS (SELECT 1 FROM [security].[Users] WHERE Username = 'admin')
+    BEGIN
+        DECLARE @Salt UNIQUEIDENTIFIER = NEWID();
+        DECLARE @PasswordHash VARBINARY(256);
+
+        SET @PasswordHash = HASHBYTES('SHA2_256', CONVERT(VARCHAR(200), 'Admin123!' + CAST(@Salt AS VARCHAR(36))));
+
+        INSERT INTO [security].[Users]
+        (
+            Username, Email, PasswordHash, PasswordSalt,
+            FirstName, LastName, IsSystem, StatusCode, MustChangePassword
+        )
+        VALUES
+        (
+            'admin',
+            'admin@mahadi.com.pe',
+            @PasswordHash,
+            CAST(@Salt AS VARBINARY(128)),
+            N'Administrador',
+            N'Sistema',
+            1,
+            'A',
+            1
+        );
+    END;
+
+    --------------------------------------------------------
+    -- 8.5 Roles del sistema y asignación al admin
+    --------------------------------------------------------
+    IF NOT EXISTS (SELECT 1 FROM [security].[Roles] WHERE RoleCode = 'ERP_ADMIN')
+    BEGIN
+        INSERT INTO [security].[Roles] (RoleCode, RoleName, IsSystem)
+        VALUES
+        ('ERP_ADMIN',   N'Administrador ERP', 1),
+        ('ERP_MANAGER', N'Gerente',           1),
+        ('ERP_OPERATOR',N'Operador',          1),
+        ('ERP_VIEWER',  N'Visualizador',      1);
+    END;
+
+    DECLARE @AdminId INT = (SELECT TOP 1 UserId FROM [security].[Users] WHERE Username = 'admin');
+
+    INSERT INTO [security].[UserRoles] (UserId, RoleId, AssignedOn, AssignedBy)
+    SELECT @AdminId, R.RoleId, GETUTCDATE(), @AdminId
+    FROM [security].[Roles] R
+    WHERE R.RoleCode IN ('ERP_ADMIN')
+      AND NOT EXISTS (
+            SELECT 1
+            FROM [security].[UserRoles] UR
+            WHERE UR.UserId = @AdminId AND UR.RoleId = R.RoleId
+        );
+
+    COMMIT TRANSACTION;
+
+    PRINT '>> Base de datos inicializada correctamente por [utility].[usp_InitializeDatabase].';
+END;
+GO
+
+------------------------------------------------------------
+-- 9. MENSAJE FINAL
+------------------------------------------------------------
+PRINT '=============================================';
+PRINT ' ARQUITECTURA BÁSICA ERP_MAHADI LISTA';
+PRINT ' - BD + SCHEMAS + TABLAS BASE + UTILIDADES   ';
+PRINT ' Siguientes pasos:                           ';
+PRINT ' 1) Ejecutar: EXEC [utility].[usp_InitializeDatabase];';
+PRINT ' 2) Crear tablas por módulo (sales, inventory, etc.)';
+PRINT ' 3) Configurar backups / jobs de mantenimiento';
+PRINT ' 4) Conectar .NET 8 usando el login de aplicación';
+PRINT '=============================================';
+GO
