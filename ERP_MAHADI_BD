@@ -1344,6 +1344,16 @@ BEGIN
     BaseEndpoint NVARCHAR(500) NOT NULL,            -- Endpoint base o ruta del servidor
     BasePath NVARCHAR(500) NULL,                    -- Ruta base para archivos .bin (si aplica)
     DefaultPort INT NULL,                           -- Puerto por defecto
+[StorageType] VARCHAR(20) NOT NULL DEFAULT 'LocalAppDir',
+-- Valores: 'LocalAppDir', 'NetworkUNC', 'AzureBlob', 'AWS_S3', 'DatabaseBlob', 'SFTP', 'FTP'
+
+[StorageConfig] NVARCHAR(MAX) NULL, -- JSON con configuración específica
+-- Ejemplo para AzureBlob: {"Container":"connection-files","SasToken":"...", "Endpoint":"..."}
+-- Ejemplo para NetworkUNC: {"Domain":"CORP","Username":"svc_erp","UseImpersonation":true}
+
+[RetryPolicy] NVARCHAR(MAX) NULL, -- JSON: maxRetries, backoff, timeout
+[HealthCheckEndpoint] NVARCHAR(500) NULL, -- Para monitoreo
+[IsReadOnly] BIT NOT NULL DEFAULT 0, -- Solo lectura (para réplicas)
     TimeoutSeconds INT NOT NULL DEFAULT 30,         -- Tiempo máximo de espera en segundos
     MaxRetryCount INT NOT NULL DEFAULT 3,           -- Intentos máximos de reconexión
     RetryDelaySeconds INT NOT NULL DEFAULT 5,       -- Espera entre reintentos
@@ -1390,6 +1400,18 @@ BEGIN
 		-- Configuración específica (sobreescribe valores del proveedor)
 		CustomEndpoint NVARCHAR(500) NULL,              -- Endpoint personalizado (si difiere del base)
 		CustomPath NVARCHAR(500) NULL,                  -- Ruta personalizada para .bin
+		ConfigFileName NVARCHAR(100) NULL,
+		FileHash VARCHAR(64) NULL,
+
+[FileVersion] VARCHAR(20) NULL, -- v1, v2 (para rotación de archivos)
+[FileChecksum] VARCHAR(64) NULL, -- SHA256 para integridad
+[LastVerified] DATETIME2 NULL, -- Última verificación de integridad
+[VerifiedBy] NVARCHAR(100) NULL, -- Quién verificó
+[EncryptionAlgorithm] VARCHAR(50) NULL DEFAULT 'AES-256-CBC',
+[KeyIdentifier] NVARCHAR(200) NULL, -- ID de clave en Azure Key Vault
+[ActivationDate] DATETIME2 NULL, -- Cuando se activó esta configuración
+[DeactivationDate] DATETIME2 NULL, -- Cuando se desactiva (para migraciones)
+
 		CustomPort INT NULL,
 		CustomTimeoutSeconds INT NULL,
 		CustomMaxRetryCount INT NULL,
