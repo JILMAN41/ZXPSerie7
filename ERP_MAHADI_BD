@@ -424,15 +424,58 @@ IF NOT EXISTS (SELECT * FROM sys.tables
                WHERE name = 'Companies' AND schema_id = SCHEMA_ID('master'))
 BEGIN
     CREATE TABLE [master].[Companies](
-        [CompanyId] INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [GroupCode] CHAR(4) NOT NULL UNIQUE,
-        [GroupGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
-        [GroupName] NVARCHAR(200) NOT NULL,
-        [Description] NVARCHAR(500) NULL,
-        [Status] CHAR(1) NOT NULL DEFAULT 'A', -- A=Active, I=Inactive
+        -- IDENTIFICACIÓN
+        [CompanyId] INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CompanyId PRIMARY KEY,
+        [GroupGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL UNIQUE,
+        [GroupCode] CHAR(4) NOT NULL UNIQUE,                -- Código interno de 4 chars: "MAHA", "GRUP"
+        [GroupName] NVARCHAR(200) NOT NULL,                 -- Nombre del holding/grupo
+        [GroupNameShort] NVARCHAR(50) NULL,                 -- Nombre corto para displays
+        
+        -- INFORMACIÓN CORPORATIVA
+        [Description] NVARCHAR(500) NULL,                   -- Descripción del grupo
+        --[Vision] NVARCHAR(1000) NULL,                       -- Visión corporativa
+        --[Mission] NVARCHAR(1000) NULL,                      -- Misión corporativa
+        --[Values] NVARCHAR(1000) NULL,                       -- Valores corporativos
+        [IndustrySector] NVARCHAR(100) NULL,                -- Sector industrial: Tecnología, Retail, etc.
+        [CorporateEmail] NVARCHAR(100) NULL,                -- Email corporativo del grupo
+        [CorporatePhone] NVARCHAR(20) NULL,                 -- Teléfono corporativo
+        [CorporateWebsite] NVARCHAR(100) NULL,              -- Sitio web corporativo
+        
+        -- FECHAS IMPORTANTES
+        [FoundationDate] DATE NULL,                         -- Fecha de fundación del grupo
+        [RegistrationDate] DATE NULL,                       -- Fecha de registro legal
+        [FiscalYearStart] DATE NULL,                        -- Inicio del año fiscal (ej: 2024-01-01)
+        [FiscalYearEnd] DATE NULL,                          -- Fin del año fiscal (ej: 2024-12-31)
+        
+        -- ESTADO Y CONTROL
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',              -- A=Activo, I=Inactivo, S=Suspendido
+        [StatusReason] NVARCHAR(200) NULL,                  -- Razón del estado (si está inactivo/suspendido)
+        [IsPublic] BIT NOT NULL DEFAULT 0,                  -- ¿Es una empresa pública/cotiza en bolsa?
+        [HasInternationalOperations] BIT NOT NULL DEFAULT 0, -- ¿Tiene operaciones internacionales?
+        
+        -- AUDITORÍA Y SEGUIMIENTO
+        [CreatedBy] NVARCHAR(100) NOT NULL DEFAULT SYSTEM_USER,
         [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
-        [ModifiedOn] DATETIME2(0) NULL
+        [ModifiedBy] NVARCHAR(100) NULL,
+        [ModifiedOn] DATETIME2(0) NULL,
+        --[AuditUser] NVARCHAR(100) NULL,                     -- Usuario que realizó última auditoría
+        --[AuditDate] DATETIME2(0) NULL,                      -- Fecha de última auditoría
+        
+        -- CONCURRENCIA Y VERSIONADO
+        [RowVersion] ROWVERSION NOT NULL,
+        
+        -- ÍNDICES
+        --INDEX IX_Companies_GroupCode (GroupCode) --Considerar para el futuro cunado crezca la BD
+        --INDEX IX_Companies_Status (Status),
+        --INDEX IX_Companies_FoundationDate (FoundationDate)
     );
+    
+    PRINT '>> Tabla [master].[Companies] creada con estructura ampliada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[Companies] ya existe. Considerar migración de nuevas columnas.';
+ 
 END
 GO
 
@@ -440,32 +483,128 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'CompanyCodes' AND schema_id = SCHEMA_ID(N'master'))
 BEGIN
     CREATE TABLE [master].[CompanyCodes](
-        [CompanyCodeId]	   INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CompanyCodeId PRIMARY KEY,
-        [CompanyCode] CHAR(4) NOT NULL UNIQUE,     -- "1000", "2000"
-		[CompanyId] INT NOT NULL,                  -- Grupo dueño
-		[TaxIdentificationNumber] VARCHAR(11) NOT NULL, -- RUC
-		[LegalName] NVARCHAR(250) NOT NULL,
-        [TradeName] NVARCHAR(250) NULL,
-        [ChartOfAccounts] VARCHAR(4) NOT NULL DEFAULT 'INT',
-        --[TimeZoneId]       VARCHAR(50)  NOT NULL DEFAULT 'America/Lima',
-        [CountryCode] CHAR(2) NOT NULL DEFAULT 'PE',
-        [CurrencyCode] CHAR(3) NOT NULL DEFAULT 'PEN',
-        [LanguageCode] CHAR(2) NOT NULL DEFAULT 'ES',
-        [Status] CHAR(1) NOT NULL DEFAULT 'A',
-        --[CreatedBy]        VARCHAR(50)  NOT NULL DEFAULT 'SYSTEM',
+        -- IDENTIFICACIÓN
+        [CompanyCodeId] INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_CompanyCodeId PRIMARY KEY,
+        [CompanyCodeGuid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL UNIQUE,
+        [CompanyCode] CHAR(4) NOT NULL UNIQUE,             -- Código interno: "1000", "MAHA"
+        [CompanyId] INT NOT NULL,                          -- FK al grupo empresarial
+        [TaxIdentificationNumber] VARCHAR(11) NOT NULL,    -- RUC (11 dígitos para Perú)
+        [TaxIdentificationType] CHAR(3) NOT NULL DEFAULT 'RUC', -- RUC, DNI, CE, PAS
+        
+        -- DENOMINACIONES
+        [LegalName] NVARCHAR(250) NOT NULL,                -- Razón Social completa
+        [TradeName] NVARCHAR(250) NULL,                    -- Nombre Comercial
+        [BusinessName] NVARCHAR(250) NULL,                 -- Nombre de Negocio (marca)
+        [Acronym] NVARCHAR(20) NULL,                       -- Siglas: "MAHADI S.A.C."
+        
+        -- INFORMACIÓN LEGAL
+        [CompanyType] NVARCHAR(50) NULL,                   -- S.A.C., S.A.A., E.I.R.L., S.R.L.
+        [LegalForm] NVARCHAR(100) NULL,                    -- Forma jurídica según SUNAT
+        [LegalRepresentative] NVARCHAR(200) NULL,          -- Representante Legal
+        [LegalRepresentativeDNI] VARCHAR(8) NULL,          -- DNI del representante
+        [RegistrationNumber] NVARCHAR(50) NULL,            -- Número de partida registral
+        [RegistrationOffice] NVARCHAR(100) NULL,           -- Oficina registral
+        [ConstitutionDate] DATE NULL,                      -- Fecha de constitución
+        
+        -- ACTIVIDAD ECONÓMICA
+        [EconomicActivity] NVARCHAR(300) NULL,             -- Descripción actividad económica
+        [SunatEconomicActivity] VARCHAR(10) NULL,          -- Código actividad SUNAT (CIU)
+        [NAICSCode] VARCHAR(10) NULL,                      -- Código NAICS (clasificación norteamericana)
+        [ISICCode] VARCHAR(10) NULL,                       -- Código ISIC (clasificación internacional)
+        
+        -- DATOS SUNAT
+        [SunatCondition] VARCHAR(50) NULL,                 -- HABIDO, NO HABIDO, NO HALLADO
+        [SunatState] VARCHAR(50) NULL,                     -- Estado en SUNAT
+        [SunatRegistrationDate] DATE NULL,                 -- Fecha de registro en SUNAT
+        [SunatUpdateDate] DATE NULL,                       -- Última actualización SUNAT
+        [ElectronicInvoiceProvider] NVARCHAR(100) NULL,    -- Proveedor de facturación electrónica
+        
+        -- UBICACIÓN Y CONTACTO
+        [MainAddressId] INT NULL,                          -- FK a la dirección principal
+        [Email] NVARCHAR(100) NULL,                        -- Email corporativo
+        [Phone] NVARCHAR(20) NULL,                         -- Teléfono principal
+        [MobilePhone] NVARCHAR(20) NULL,                   -- Celular corporativo
+        [Website] NVARCHAR(100) NULL,                      -- Sitio web
+        [ContactPerson] NVARCHAR(100) NULL,                -- Persona de contacto
+        [ContactPersonRole] NVARCHAR(50) NULL,             -- Cargo de la persona de contacto
+        
+        -- CONFIGURACIÓN SISTEMA
+        [ChartOfAccounts] VARCHAR(4) NOT NULL DEFAULT 'INT', -- Plan de cuentas: INT, SUNAT, US
+        [CurrencyCode] CHAR(3) NOT NULL DEFAULT 'PEN',     -- Moneda principal
+        [CountryCode] CHAR(2) NOT NULL DEFAULT 'PE',       -- Código país ISO
+        [LanguageCode] CHAR(2) NOT NULL DEFAULT 'ES',      -- Idioma: ES, EN, PT
+        [TimeZoneId] VARCHAR(50) NOT NULL DEFAULT 'SA Pacific Standard Time', -- Zona horaria
+        [DecimalPlaces] TINYINT NOT NULL DEFAULT 2,        -- Decimales para montos
+        [DateFormat] VARCHAR(20) NOT NULL DEFAULT 'dd/MM/yyyy', -- Formato fecha
+        [NumberFormat] VARCHAR(20) NOT NULL DEFAULT '#,##0.00', -- Formato números
+        
+        -- ESTADO Y CONTROL
+        [Status] CHAR(1) NOT NULL DEFAULT 'A',             -- A=Activo, I=Inactivo, S=Suspendido, B=Bloqueado
+        [StatusReason] NVARCHAR(200) NULL,                 -- Razón del estado
+        [IsDefault] BIT NOT NULL DEFAULT 0,                -- ¿Es la empresa por defecto del grupo?
+        [IsHeadquarters] BIT NOT NULL DEFAULT 0,           -- ¿Es la sede central?
+        [IsFiscalEntity] BIT NOT NULL DEFAULT 1,           -- ¿Es entidad fiscal? (emite comprobantes)
+        [IsOperational] BIT NOT NULL DEFAULT 1,            -- ¿Está operativa actualmente?
+        [IsVirtual] BIT NOT NULL DEFAULT 0,                -- ¿Es una empresa virtual/sin operación real?
+        
+        -- MÉTRICAS
+        [EmployeeCount] INT NULL,                          -- Número aproximado de empleados
+        [AnnualRevenue] DECIMAL(18,2) NULL,                -- Ingresos anuales estimados
+        [CapitalStock] DECIMAL(18,2) NULL,                 -- Capital social
+        
+        -- FECHAS IMPORTANTES
+        [FoundationDate] DATE NULL,                        -- Fecha de fundación de la sociedad
+        [FiscalYearStart] DATE NULL,                       -- Inicio año fiscal (puede diferir del grupo)
+        [FiscalYearEnd] DATE NULL,                         -- Fin año fiscal
+        [OperationalStartDate] DATE NULL,                  -- Fecha inicio de operaciones
+        [OperationalEndDate] DATE NULL,                    -- Fecha fin de operaciones (si aplica)
+        
+        -- AUDITORÍA Y SEGUIMIENTO
+        [CreatedBy] NVARCHAR(100) NOT NULL DEFAULT SYSTEM_USER,
         [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
-        --[ModifiedBy]       VARCHAR(50)  NULL,
+        [ModifiedBy] NVARCHAR(100) NULL,
         [ModifiedOn] DATETIME2(0) NULL,
-
-		CONSTRAINT [UQ_CompanyCode_TaxId] UNIQUE ([TaxIdentificationNumber]),
-        FOREIGN KEY ([CompanyId]) REFERENCES [master].[Companies]([CompanyId])
+        [LastFinancialClosing] DATETIME2(0) NULL,          -- Último cierre financiero
+        [LastInventoryCount] DATETIME2(0) NULL,            -- Último conteo de inventario
+        
+        -- CONCURRENCIA
+        [RowVersion] ROWVERSION NOT NULL,
+        
+        -- LLAVES FORÁNEAS
+        CONSTRAINT [FK_CompanyCodes_Companies] 
+            FOREIGN KEY ([CompanyId]) 
+            REFERENCES [master].[Companies]([CompanyId])
+            ON DELETE CASCADE,
+        
+        -- RESTRICCIONES
+        CONSTRAINT [UQ_CompanyCode_TaxId] 
+            UNIQUE ([TaxIdentificationNumber]),
+        
+        CONSTRAINT [CHK_CompanyCodes_Status] 
+            CHECK ([Status] IN ('A', 'I', 'S', 'B')),
+        
+        CONSTRAINT [CHK_CompanyCodes_TaxId] 
+            CHECK (LEN([TaxIdentificationNumber]) BETWEEN 8 AND 11),
+        
+        CONSTRAINT [CHK_CompanyCodes_DecimalPlaces] 
+            CHECK ([DecimalPlaces] BETWEEN 0 AND 6),
+        
+        -- ÍNDICES
+        --INDEX IX_CompanyCodes_CompanyId (CompanyId), -- Considerar para el futuro cunado crezca la BD
+        --INDEX IX_CompanyCodes_TaxId (TaxIdentificationNumber),
+        --INDEX IX_CompanyCodes_Status (Status),
+        --INDEX IX_CompanyCodes_IsDefault (IsDefault),
+        --INDEX IX_CompanyCodes_CountryCode (CountryCode),
+        --INDEX IX_CompanyCodes_CurrencyCode (CurrencyCode),
+        --INDEX IX_CompanyCodes_SunatCondition (SunatCondition)
     );
-
-    PRINT '>> Tabla [master].[CompanyCodes] creada.';
+    
+    PRINT '>> Tabla [master].[CompanyCodes] creada con estructura ampliada.';
 END
 ELSE
-    PRINT '>> Tabla [master].[CompanyCodes] ya existe.';
-GO
+BEGIN
+    PRINT '>> Tabla [master].[CompanyCodes] ya existe. Considerar migración de nuevas columnas.';
+END
 
 -- PLANTAS
 IF NOT EXISTS (SELECT * FROM sys.tables 
@@ -1191,6 +1330,254 @@ BEGIN
 END;
 GO
 
+-- =============================================
+-- SCHEMA: master
+-- TABLA: ConnectionProviders
+-- Catálogo de proveedores de servicios de internet
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'ConnectionProviders' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+ CREATE TABLE master.ConnectionProviders (
+    Id INT IDENTITY(1,1) PRIMARY KEY,
+    Name NVARCHAR(100) NOT NULL,                    -- Nombre del proveedor: Claro, Win, Movistar, etc.
+    ProviderType NVARCHAR(50) NOT NULL DEFAULT 'ISP', -- Tipo: ISP, VPN, Backup, Cloud
+    BaseEndpoint NVARCHAR(500) NOT NULL,            -- Endpoint base o ruta del servidor
+    BasePath NVARCHAR(500) NULL,                    -- Ruta base para archivos .bin (si aplica)
+    DefaultPort INT NULL,                           -- Puerto por defecto
+    TimeoutSeconds INT NOT NULL DEFAULT 30,         -- Tiempo máximo de espera en segundos
+    MaxRetryCount INT NOT NULL DEFAULT 3,           -- Intentos máximos de reconexión
+    RetryDelaySeconds INT NOT NULL DEFAULT 5,       -- Espera entre reintentos
+    IsSSLEnabled BIT NOT NULL DEFAULT 0,            -- Requiere SSL/TLS
+    RequiresAuthentication BIT NOT NULL DEFAULT 0,   -- Necesita autenticación adicional
+    Description NVARCHAR(500) NULL,
+    IsActive BIT NOT NULL DEFAULT 1,                -- Proveedor activo en el sistema
+    
+    -- Auditoría
+    CreatedOn DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    CreatedBy NVARCHAR(100) NOT NULL DEFAULT SYSTEM_USER,
+    ModifiedOn DATETIME2 NULL,
+    ModifiedBy NVARCHAR(100) NULL,
+    
+    -- Concurrencia optimista
+    RowVersion ROWVERSION NOT NULL,
+    
+    -- Índices
+    CONSTRAINT UQ_ConnectionProviders_Name UNIQUE (Name),
+    CONSTRAINT CHK_ConnectionProviders_Timeout CHECK (TimeoutSeconds > 0 AND TimeoutSeconds <= 300),
+    CONSTRAINT CHK_ConnectionProviders_RetryCount CHECK (MaxRetryCount >= 0 AND MaxRetryCount <= 10),
+    CONSTRAINT CHK_ConnectionProviders_RetryDelay CHECK (RetryDelaySeconds >= 1 AND RetryDelaySeconds <= 60)
+);
+    PRINT '>> Tabla [master].[ConnectionProviders] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[ConnectionProviders] ya existe.';
+END;
+GO
+
+-- =============================================
+-- TABLA: CompanyConnectionSettings
+-- Configuración específica por empresa y proveedor
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'CompanyConnectionSettings' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+	CREATE TABLE master.CompanyConnectionSettings (
+		Id INT IDENTITY(1,1) PRIMARY KEY,
+		CompanyCodeId INT NOT NULL,                     -- FK a CompanyCodes
+		ConnectionProviderId INT NOT NULL,              -- FK a ConnectionProviders
+		ConnectionName NVARCHAR(200) NOT NULL,          -- Nombre descriptivo: "Claro - Sucursal Central"
+    
+		-- Configuración específica (sobreescribe valores del proveedor)
+		CustomEndpoint NVARCHAR(500) NULL,              -- Endpoint personalizado (si difiere del base)
+		CustomPath NVARCHAR(500) NULL,                  -- Ruta personalizada para .bin
+		CustomPort INT NULL,
+		CustomTimeoutSeconds INT NULL,
+		CustomMaxRetryCount INT NULL,
+		CustomRetryDelaySeconds INT NULL,
+    
+		-- Prioridad y estado
+		Priority INT NOT NULL DEFAULT 1,                -- Orden de intento: 1 (primero), 2, 3, etc.
+		Weight INT NOT NULL DEFAULT 100,                -- Peso para balance de carga (1-100)
+		IsActive BIT NOT NULL DEFAULT 1,                -- Esta conexión específica está activa
+		IsPrimary BIT NOT NULL DEFAULT 0,               -- Conexión principal preferida
+    
+		-- Métricas y monitoreo
+		LastTested DATETIME2 NULL,                      -- Última vez que se probó la conexión
+		LastTestResult BIT NULL,                        -- Resultado del último test: 1=OK, 0=Error
+		LastTestDurationMs INT NULL,                    -- Duración del último test en ms
+		SuccessCount INT NOT NULL DEFAULT 0,            -- Contador de conexiones exitosas
+		FailureCount INT NOT NULL DEFAULT 0,            -- Contador de fallos
+		AvgResponseTimeMs INT NULL,                     -- Tiempo promedio de respuesta
+    
+		-- Configuración de reintento inteligente
+		BackoffMultiplier DECIMAL(3,2) NOT NULL DEFAULT 1.5, -- Multiplicador para backoff exponencial
+		CircuitBreakerEnabled BIT NOT NULL DEFAULT 1,   -- Habilita circuit breaker pattern
+		CircuitBreakerThreshold INT NOT NULL DEFAULT 5, -- Fallos consecutivos para abrir circuito
+		CircuitBreakerTimeoutSeconds INT NOT NULL DEFAULT 60, -- Tiempo antes de reintentar
+    
+		-- Configuración de seguridad
+		EncryptionKey NVARCHAR(200) NULL,               -- Clave específica para desencriptar .bin
+		RequiresTwoFactor BIT NOT NULL DEFAULT 0,       -- Requiere 2FA para esta conexión
+		AllowedIPRange NVARCHAR(100) NULL,              -- Rango de IPs permitidas (CIDR)
+    
+		-- Metadata
+		Tags NVARCHAR(500) NULL,                        -- Tags para filtrado: "Sucursal", "Backup", "Cloud"
+		Notes NVARCHAR(1000) NULL,
+    
+		-- Auditoría
+		CreatedOn DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+		CreatedBy NVARCHAR(100) NOT NULL DEFAULT SYSTEM_USER,
+		ModifiedOn DATETIME2 NULL,
+		ModifiedBy NVARCHAR(100) NULL,
+		RowVersion ROWVERSION NOT NULL,
+    
+		-- Foreign Keys
+		CONSTRAINT FK_CompanyConnectionSettings_CompanyCodeId 
+			FOREIGN KEY (CompanyCodeId) 
+			REFERENCES master.CompanyCodes(CompanyCodeId) 
+			ON DELETE CASCADE,
+    
+		CONSTRAINT FK_CompanyConnectionSettings_ConnectionProviderId 
+			FOREIGN KEY (ConnectionProviderId) 
+			REFERENCES master.ConnectionProviders(Id) 
+			ON DELETE CASCADE,
+    
+		-- Índices
+		CONSTRAINT UQ_CompanyConnectionSettings_Company_Provider 
+			UNIQUE (CompanyCodeId, ConnectionProviderId),
+    
+		CONSTRAINT CHK_CompanyConnectionSettings_Priority CHECK (Priority > 0),
+		CONSTRAINT CHK_CompanyConnectionSettings_Weight CHECK (Weight >= 1 AND Weight <= 100),
+		CONSTRAINT CHK_CompanyConnectionSettings_CustomTimeout CHECK (CustomTimeoutSeconds IS NULL OR (CustomTimeoutSeconds > 0 AND CustomTimeoutSeconds <= 300)),
+    
+		-- Índices para búsqueda rápida
+		INDEX IX_CompanyConnectionSettings_CompanyCodeId (CompanyCodeId),
+		INDEX IX_CompanyConnectionSettings_ConnectionProviderId (ConnectionProviderId),
+		INDEX IX_CompanyConnectionSettings_Priority_Active (Priority, IsActive),
+		INDEX IX_CompanyConnectionSettings_LastTested (LastTested)
+	);
+    PRINT '>> Tabla [master].[CompanyConnectionSettings] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[CompanyConnectionSettings] ya existe.';
+END;
+GO
+
+-- =============================================
+-- TABLA: ConnectionLogs
+-- Log detallado de intentos de conexión (opcional, para debugging avanzado)
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'ConnectionLogs' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+	CREATE TABLE master.ConnectionLogs (
+		Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+		CompanyConnectionSettingsId INT NOT NULL,       -- FK a la configuración usada
+		AttemptNumber INT NOT NULL,                     -- Número de intento en esta sesión
+		ConnectionStartTime DATETIME2 NOT NULL,         -- Inicio del intento
+		ConnectionEndTime DATETIME2 NULL,               -- Fin del intento
+		Success BIT NOT NULL,                           -- 1=éxito, 0=fallo
+		DurationMs INT NULL,                            -- Duración en milisegundos
+		ErrorCode NVARCHAR(50) NULL,                    -- Código de error si falló
+		ErrorMessage NVARCHAR(2000) NULL,               -- Mensaje detallado del error
+		SourceIP NVARCHAR(45) NULL,                     -- IP origen del intento
+		DestinationIP NVARCHAR(45) NULL,                -- IP destino conectada
+		Protocol NVARCHAR(20) NULL,                     -- Protocolo usado: TCP, HTTP, FTP
+		BytesSent INT NULL,                             -- Bytes enviados
+		BytesReceived INT NULL,                         -- Bytes recibidos
+    
+		-- Metadata
+		SessionId UNIQUEIDENTIFIER NOT NULL,            -- ID de sesión de login
+		UserId INT NULL,                                -- Usuario que intentó conexión
+    
+		-- Índices para reporting
+		INDEX IX_ConnectionLogs_CompanyConnectionSettingsId (CompanyConnectionSettingsId),
+		INDEX IX_ConnectionLogs_ConnectionStartTime (ConnectionStartTime),
+		INDEX IX_ConnectionLogs_Success (Success),
+    
+		CONSTRAINT FK_ConnectionLogs_CompanyConnectionSettingsId 
+			FOREIGN KEY (CompanyConnectionSettingsId) 
+			REFERENCES master.CompanyConnectionSettings(Id)
+	);
+    PRINT '>> Tabla [master].[ConnectionLogs] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[ConnectionLogs] ya existe.';
+END;
+
+
+-- =============================================
+-- TABLA: ConnectionHealthMetrics
+-- Métricas agregadas para monitoreo (opcional)
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'ConnectionHealthMetrics' AND schema_id = SCHEMA_ID('master'))
+BEGIN
+	CREATE TABLE master.ConnectionHealthMetrics (
+		Id INT IDENTITY(1,1) PRIMARY KEY,
+		CompanyConnectionSettingsId INT NOT NULL,
+		MetricDate DATE NOT NULL,                       -- Fecha de las métricas
+		HourOfDay INT NOT NULL,                         -- Hora 0-23
+		TotalAttempts INT NOT NULL DEFAULT 0,           -- Intentos totales
+		SuccessfulAttempts INT NOT NULL DEFAULT 0,      -- Intentos exitosos
+		AvgResponseTimeMs INT NOT NULL DEFAULT 0,       -- Tiempo promedio respuesta
+		MaxResponseTimeMs INT NOT NULL DEFAULT 0,       -- Tiempo máximo respuesta
+		MinResponseTimeMs INT NOT NULL DEFAULT 0,       -- Tiempo mínimo respuesta
+		TimeoutCount INT NOT NULL DEFAULT 0,            -- Timeouts ocurridos
+		CircuitBreakerTrips INT NOT NULL DEFAULT 0,     -- Veces que se abrió el circuito
+    
+		CONSTRAINT FK_ConnectionHealthMetrics_CompanyConnectionSettingsId 
+			FOREIGN KEY (CompanyConnectionSettingsId) 
+			REFERENCES master.CompanyConnectionSettings(Id),
+    
+		CONSTRAINT UQ_ConnectionHealthMetrics_Date_Hour_Setting 
+			UNIQUE (CompanyConnectionSettingsId, MetricDate, HourOfDay)
+	);
+    PRINT '>> Tabla [master].[ConnectionHealthMetrics] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[ConnectionHealthMetrics] ya existe.';
+END;
+
+-- =============================================
+-- VISTA: vw_CompanyActiveConnections
+-- Vista para obtener conexiones activas ordenadas por prioridad
+-- =============================================
+
+	CREATE VIEW master.vw_CompanyActiveConnections
+	AS
+	SELECT 
+		cc.CompanyCode,
+		cc.TaxIdentificationNumber AS RUC,
+		cp.Name AS ProviderName,
+		cp.ProviderType,
+		COALESCE(ccs.CustomEndpoint, cp.BaseEndpoint) AS Endpoint,
+		COALESCE(ccs.CustomPath, cp.BasePath) AS ConnectionPath,
+		COALESCE(ccs.CustomPort, cp.DefaultPort) AS Port,
+		COALESCE(ccs.CustomTimeoutSeconds, cp.TimeoutSeconds) AS TimeoutSeconds,
+		COALESCE(ccs.CustomMaxRetryCount, cp.MaxRetryCount) AS MaxRetryCount,
+		COALESCE(ccs.CustomRetryDelaySeconds, cp.RetryDelaySeconds) AS RetryDelaySeconds,
+		ccs.Priority,
+		ccs.Weight,
+		ccs.IsPrimary,
+		ccs.LastTested,
+		ccs.LastTestResult,
+		ccs.AvgResponseTimeMs,
+		ccs.SuccessCount,
+		ccs.FailureCount,
+		cp.IsSSLEnabled,
+		ccs.EncryptionKey,
+		ccs.CircuitBreakerEnabled,
+		ccs.CircuitBreakerThreshold,
+		ccs.CircuitBreakerTimeoutSeconds
+	FROM master.CompanyConnectionSettings ccs
+	INNER JOIN master.CompanyCodes cc ON ccs.CompanyCodeId = cc.CompanyCodeId
+	INNER JOIN master.ConnectionProviders cp ON ccs.ConnectionProviderId = cp.Id
+	WHERE ccs.IsActive = 1 
+		AND cp.IsActive = 1
+		AND cc.Status = 1; -- Asumiendo que CompanyCodes tiene columna Status
+
 ------------------------------------------------------------
 -- 9. MENSAJE FINAL
 ------------------------------------------------------------
@@ -1204,3 +1591,5 @@ PRINT ' 3) Configurar backups / jobs de mantenimiento';
 PRINT ' 4) Conectar .NET 8 usando el login de aplicación';
 PRINT '=============================================';
 GO
+
+
