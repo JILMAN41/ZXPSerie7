@@ -1,751 +1,1470 @@
-using System;
-using System.Collections.Generic;
-using System.Data;
-using System.Drawing;
-using System.Windows.Forms;
-using SigMahadi_H.Settings;
-using System.Diagnostics;
-using Prj_Capa_Negocio;
-using System.Management;
-using System.Collections;
-using System.Net.NetworkInformation;
-using Prj_Capa_Datos;
-using SigMahadi_H.Configuraciones;
-using Newtonsoft.Json;
-using Prj_Capa_Entidad;
-using System.IO;
-using Prj_Capa_Negocio.CRM;
-using System.Linq;
-using System.Text;
-using Prj_Capa_Negocio.Infrastructure;
+using ERP.Mahadi.Application.Common.Exceptions;
+using ERP.Mahadi.Application.Infrastructure.Services;
+using ERP.Mahadi.Desktop.UI;
+using ERP.Mahadi.Domain.Interfaces.Data;
+using ERP.Mahadi.Domain.Interfaces.Repositories.Legacy;
+using ERP.Mahadi.Domain.Interfaces.Security;
+using ERP.Mahadi.Domain.Shared.Constants;
+using ERP.Mahadi.Domain.Shared.Contexts;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace SigMahadi_H
 {
-    public partial class LoginForm : RJForms.RJBaseForm
+    public partial class LoginForm : Form
     {
-        #region -> Constructor
-        int contador = 0;
-        string CrearCodSerieDocSunat;
-        private List<EN_MiEmpresa> EmpDatosIni = new List<EN_MiEmpresa>();
-        #region Métodos de evento
+        // Servicios inyectados
+        private readonly ICompanyConnectionProvider _companyProvider;
+        private readonly CompanyContext _companyContext;
+        private readonly IAuthenticationService _authService;
+        private readonly IUsuarioRepository_Legacy _usuarioRepository;
+        private readonly ILogger<LoginForm> _logger;
+        private readonly IServiceProvider _serviceProvider;
 
-        public LoginForm()
+        // Servicio para datos iniciales de sede
+        private readonly IInitialDataService _initialDataService;
+
+        // Variables locales
+        private int contador = 0;
+        private bool isRucValidated = false;
+
+        public LoginForm(
+            ICompanyConnectionProvider companyProvider,
+            CompanyContext companyContext,
+            IAuthenticationService authService,
+            IUsuarioRepository_Legacy usuarioRepository,
+            ILogger<LoginForm> logger,
+            IServiceProvider serviceProvider,
+            IInitialDataService initialDataService)
         {
-            Resolution.autoScaleModeJilman(this);
+            _companyProvider = companyProvider;
+            _companyContext = companyContext;
+            _authService = authService;
+            _usuarioRepository = usuarioRepository;
+            _logger = logger;
+            _serviceProvider = serviceProvider;
+            _initialDataService = initialDataService;
+
             InitializeComponent();
-            
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
-
-            AddControlBox();
-            ApplyAppearanceSettings();
-
-            //Agregar una linea
-            var line = new Control();
-            line.Size = new Size(lblDescription.Width - 10, 1);
-            line.BackColor = Color.LightGray;
-            line.Location = new Point(lblDescription.Left + 5, lblTitle.Bottom + 15);
-            this.icoBanner.Controls.Add(line);
+            InitializeEvents();
         }
-        #endregion
+
+        private void InitializeEvents()
+        {
+            this.btnLogin.Click += Btn_ingresar_Click;
+            this.btn_Close.Click += Btn_cerrar_Click;
+            Load += LoginForm_Load;
+
+            // Eventos para mejorar UX
+            this.txt_RucEmpreaa.KeyPress += Txt_RucEmpreaa_KeyPress;
+            this.txt_usu.KeyPress += Txt_usu_KeyPress;
+            this.txt_pass.KeyPress += Txt_password_KeyPress;
+        }
+        private void Btn_validaRuc_Enter(object sender, EventArgs e)
+        {
+            //btn_validaRuc.FillColor = Color.Orange;
+        }
+
+        private void Btn_validaRuc_Leave(object sender, EventArgs e)
+        {
+            //btn_validaRuc.FillColor = Color.FromArgb(((int)(((byte)(128)))), ((int)(((byte)(255)))), ((int)(((byte)(128)))));
+        }
 
         private async void LoginForm_Load(object sender, EventArgs e)
         {
-            var emp1 = new EN_MiEmpresa {
-                Ruc = "20602348157",
-                Nombre = "MAHADI",
-                NombreSIG = "SIG MAHADI",
-                RutaConex = @"\Mahadi_FE.bin",
-                RutaConex2 = @"\Mahadi_FE2.bin",
-            };
-            this.EmpDatosIni.Add(emp1);
-
-            var emp2 = new EN_MiEmpresa
-            {
-                Ruc = "20609578611",
-                Nombre = "FRAMATEC",
-                NombreSIG = "SIG FRAMATEC",
-                RutaConex = @"\Framatec_FE.bin",
-                RutaConex2 = @"\Framatec_FE2.bin",
-            };
-            this.EmpDatosIni.Add(emp2);
-
-            var emp3 = new EN_MiEmpresa
-            {
-                Ruc = "20609759845",
-                Nombre = "HANSTRATEL",
-                NombreSIG = "SIG HANSTRATEL",
-                RutaConex = @"\Hanstratel_FE.bin",
-                RutaConex2 = @"\Hanstratel_FE2.bin",
-            };
-
-            this.EmpDatosIni.Add(emp3);
-            
-            var emp4 = new EN_MiEmpresa
-            {
-                Ruc = "20605365982",
-                Nombre = "INFITEL",
-                NombreSIG = "SIG INFITEL",
-                RutaConex = @"\Infitel_FE.bin",
-                RutaConex2 = @"\Infitel_FE2.bin",
-            };
-            this.EmpDatosIni.Add(emp4);
-
-            this.pnl_validaempresa.Focus();
-            this.txt_RucEmpreaa.Focus();
-            await LocationService.ObtenerUbicacionMejoradaAsync();
-        }
-
-        private void cb_nomSede_Click(object sender, EventArgs e)
-        {
-            if (this.cmb_nomSede.Text.Trim() == "")
-            {
-                cargarNomSede();
-            }
-        }
-
-        private void btnLogin_Click(object sender, EventArgs e)
-        {
-            Login();
-        }
-
-        private void txtPassword_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Enter)
-            {
-                Login();
-            }
-        }
-        private void biYoutube_Click(object sender, EventArgs e)
-        { 
-            botonesAccesoRedes(biYoutube.Tag.ToString());
-        }
-        private void biWebPage_Click(object sender, EventArgs e)
-        {
-            botonesAccesoRedes(biWebPage.Tag.ToString());
-        }
-        private void biIntranet_Click(object sender, EventArgs e)
-        {
-            botonesAccesoRedes(biIntranet.Tag.ToString());
-        }
-        private void biFacebook_Click(object sender, EventArgs e)
-        {
-            botonesAccesoRedes(biFacebook.Tag.ToString());
-        }
-
-        private void MainForm_Logout(object sender, FormClosedEventArgs e)
-        {//Evento cuando se cierra el formulario principal.
             try
             {
-                if (sender != null)
-                    Logout();
-                else
-                    Application.Exit(); //JILMAN
+                // Configuración inicial
+                this.pnl_validaempresa.Focus();
+                this.txt_RucEmpreaa.Focus();
+
+                // Opcional: cargar ubicación
+                //await LocationService.ObtenerUbicacionMejoradaAsync();
+
+                _logger.LogInformation("LoginForm cargado correctamente");
             }
             catch (Exception ex)
             {
-                MessageBox.Show("" + ex, "Aviso de Cierrar Ventana Principal", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _logger.LogError(ex, "Error al cargar LoginForm");
+                RJMessageBox.Show($"Error inicial: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-
         }
 
-
-        private void cb_empresaLogin_SelectionChangeCommitted(object sender, EventArgs e)
+        private async void Btn_validaRuc_Click(object sender, EventArgs e)
         {
-            if (cmb_empresaLogin.Text.Trim() != "")
+            try
             {
-                btnLogin.Enabled = true;
+                string rucDigitado = txt_RucEmpreaa.Text.Trim();
+
+                if (string.IsNullOrEmpty(rucDigitado))
+                {
+                    RJMessageBox.Show("Ingrese un RUC válido", "Validación",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                await ValidarRUCAsync(rucDigitado);
+
+                if (isRucValidated)
+                {
+                    // Cargar logo de empresa usando el contexto
+                    await CargarLogoEmpresaAsync();
+
+                    // Habilitar panel de login
+                    pnl_validaempresa.Visible = false;
+                    txt_usu.Focus();
+                }
+                else
+                {
+                    contador++;
+                    int intentosRestantes = 3 - contador;
+
+                    RJMessageBox.Show(
+                        $"RUC NO ESTÁ HABILITADO PARA USAR ESTE PROGRAMA\n" +
+                        $"Si se equivocó al digitar, corrija y vuelva a intentar\n" +
+                        $"Le quedan {intentosRestantes} intentos",
+                        "Mensaje", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+
+                    if (contador >= 3)
+                    {
+                        this.Close();
+                    }
+                }
+            }
+            catch (CompanyNotFoundException ex)
+            {
+                _logger.LogWarning(ex, "RUC no encontrado: {Ruc}", ex.Ruc);
+                RJMessageBox.Show($"RUC {ex.Ruc} no está registrado en el sistema",
+                    "Empresa no encontrada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al validar RUC");
+                RJMessageBox.Show($"Error al validar RUC: {ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void cb_empresaLogin_Click(object sender, EventArgs e)
+        private async Task ValidarRUCAsync(string rucDigitado)
         {
-            cargarNomEmpresa();
+            isRucValidated = false;
+
+            // 1. Obtener empresa del proveedor
+            var empresa = _companyProvider.GetCompanyByRuc(rucDigitado);
+
+            if (empresa == null)
+            {
+                throw new CompanyNotFoundException(rucDigitado);
+            }
+
+            // 2. Establecer empresa en contexto
+            _companyContext.SetCompany(empresa);
+
+            // 3. Configurar tema (claro/oscuro)
+            _companyContext.Tema = this.Rb_Claro.Checked ? "Claro" : "Oscuro";
+
+            // 4. Obtener conexión para validar que existe
+            try
+            {
+                string connectionString = await _companyProvider
+                    .GetMainConnectionStringAsync(empresa.Ruc);
+
+                // 5. Ejecutar registros iniciales si es necesario
+                await _initialDataService.VerificarRegistrosInicialesAsync(
+                    connectionString, empresa.Ruc);
+            }
+            catch (FileNotFoundException ex)
+            {
+                _logger.LogError(ex, "Archivo de conexión no encontrado para RUC: {Ruc}", empresa.Ruc);
+                throw new ApplicationException(
+                    $"Archivo de configuración no encontrado para {empresa.Nombre}. " +
+                    "Contacte al administrador.");
+            }
+
+            // 6. Actualizar UI
+            pnl_validaempresa.Visible = false;
+            pnl_validaEmpresa2.Visible = false;
+
+            lblTitle.Text = empresa.NombreSIG;
+            this.Text = $"Login - {empresa.NombreSIG}";
+
+            isRucValidated = true;
+
+            _logger.LogInformation("RUC validado: {Ruc} - {Empresa}",
+                empresa.Ruc, empresa.Nombre);
         }
 
-        private void btn_Close_Click(object sender, EventArgs e)
+        private async Task CargarLogoEmpresaAsync()
         {
+            try
+            {
+                if (_companyContext.SelectedCompany == null)
+                    return;
+
+                // Obtener logo de la base de datos
+                byte[] logoData = await _usuarioRepository
+                    .ObtenerLogoEmpresaAsync(_companyContext.SelectedCompany.Ruc);
+
+                if (logoData != null && logoData.Length > 0)
+                {
+                    using (var ms = new MemoryStream(logoData))
+                    {
+                        pb_Sig_Login.Image = Image.FromStream(ms);
+                    }
+
+                    // Guardar en contexto para uso posterior
+                    _companyContext.LogoEmpresa = logoData;
+                }
+                else
+                {
+                    // Logo por defecto
+                    pb_Sig_Login.Image = Resources.user114;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error al cargar logo de empresa");
+                pb_Sig_Login.Image = Resources.user114;
+            }
+        }
+
+        private async void Btn_ingresar_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!isRucValidated || _companyContext.SelectedCompany == null)
+                {
+                    RJMessageBox.Show("Debe validar el RUC primero",
+                        "Validación", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(this.txt_usu.Text) ||
+                    string.IsNullOrWhiteSpace(this.txt_pass.Text))
+                {
+                    RJMessageBox.Show("Ingrese usuario y contraseña",
+                        "Validación", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                this.Cursor = Cursors.WaitCursor;
+                this.btnLogin.Enabled = false;
+
+                // Autenticar usando el servicio
+                var resultado = await _authService.AutenticarAsync(
+                    _companyContext.SelectedCompany.Ruc,
+                    this.txt_usu.Text.Trim(),
+                    this.txt_pass.Text.Trim());
+
+                if (resultado.Autenticado)
+                {
+                    // Configurar sesión de usuario
+                    ConfigurarSesionUsuario(resultado.UsuarioInfo);
+
+                    _logger.LogInformation("Login exitoso: {Usuario} - {Empresa}",
+                        txt_usu.Text, _companyContext.SelectedCompany.Nombre);
+
+                    // Cerrar formulario con éxito
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                }
+                else
+                {
+                    _logger.LogWarning("Login fallido: {Usuario} - {Empresa}",
+                        txt_usu.Text, _companyContext.SelectedCompany.Nombre);
+
+                    RJMessageBox.Show(resultado.MensajeError ?? "Usuario y/o contraseña incorrectos",
+                        "Autenticación fallida", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+                    this.txt_pass.Clear();
+                    this.txt_pass.Focus();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en proceso de login");
+                RJMessageBox.Show($"Error: {ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                this.Cursor = Cursors.Default;
+                this.btnLogin.Enabled = true;
+            }
+        }
+
+        private void ConfigurarSesionUsuario(UsuarioInfo usuarioInfo)
+        {
+            // Configurar UserContext (similar a CompanyContext pero para usuario)
+            var userContext = _serviceProvider.GetRequiredService<UserContext>();
+            userContext.SetUsuario(usuarioInfo);
+
+            // Opcional: mantener compatibilidad con Cls_Libreria si hay código legacy
+            // que aún lo usa (transicional)
+            ConfigurarClsLibreria(usuarioInfo);
+        }
+
+        private void ConfigurarClsLibreria(UsuarioInfo usuarioInfo)
+        {
+            // Solo si hay código legacy que usa Cls_Libreria
+            // Esto es temporal durante la migración
+            Cls_Libreria.Ruc = _companyContext.SelectedCompany.Ruc;
+            Cls_Libreria.Usuario = usuarioInfo.NombreUsuario;
+            Cls_Libreria.Nombre = usuarioInfo.NombreCompleto;
+            Cls_Libreria.Rol = usuarioInfo.Rol;
+            Cls_Libreria.CodSede = usuarioInfo.CodigoSede;
+            Cls_Libreria.NomSede = usuarioInfo.NombreSede;
+            Cls_Libreria.CodEmpresa = usuarioInfo.CodigoEmpresa;
+            Cls_Libreria.NomEmpresa = _companyContext.SelectedCompany.Nombre;
+            Cls_Libreria.Logo = _companyContext.LogoEmpresa;
+        }
+
+        private void Btn_cerrar_Click(object sender, EventArgs e)
+        {
+            this.DialogResult = DialogResult.Cancel;
             this.Close();
         }
 
-
-
-        private void btn_validaRuc_Click(object sender, EventArgs e)
+        // Eventos de teclado para mejor UX
+        private void Txt_RucEmpreaa_KeyPress(object sender, KeyPressEventArgs e)
         {
-            string rucDigitado = txt_RucEmpreaa.Text.Trim();
-            validarRUC(rucDigitado);
-            if (this.Tag is "SI")
+            if (e.KeyChar == (char)Keys.Enter)
             {
-                //CARGAR LOGO EMPRESA
-                var ui = new Utilitario();
-                ui.Cargar_Imagen_Empresa(pb_Sig_Login);
+                e.Handled = true;
+                Btn_validaRuc_Click(sender, e);
+            }
+        }
+
+        private void Txt_usu_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            if (e.KeyChar == (char)Keys.Enter)
+            {
+                e.Handled = true;
+                this.txt_pass.Focus();
+            }
+        }
+
+        private void Txt_password_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            if (e.KeyChar == (char)Keys.Enter)
+            {
+                e.Handled = true;
+                Btn_ingresar_Click(sender, e);
+            }
+        }
+
+        // Métodos públicos para pruebas
+        public void SimularRUCValido(string ruc)
+        {
+            txt_RucEmpreaa.Text = ruc;
+            Btn_validaRuc_Click(this, EventArgs.Empty);
+        }
+
+        public void SimularLogin(string usuario, string password)
+        {
+            this.txt_usu.Text = usuario;
+            this.txt_pass.Text = password;
+            Btn_ingresar_Click(this, EventArgs.Empty);
+        }
+    }
+}
+
+
+using ERP.Mahadi.Desktop.UI.Features.Master.Company;
+using ERP.Mahadi.Domain.Entities.Master;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Domain.Interfaces.Data
+{
+    public interface ICompanyConnectionProvider
+    {
+        EN_MiEmpresa GetCompanyByRuc(string ruc);
+        //CompanyCode GetCompanyByRuc(string ruc);
+        Task<string> GetMainConnectionStringAsync(string ruc);
+
+        //Task<string> GetMainConnectionStringAsync(EN_MiEmpresa empresa);
+
+        //// Para conexiones de soporte (si las necesitas aquí)
+        //string GetMahadiConnectionString();
+        //string GetClientesDniConnectionString();
+        //// ... etc
+    }
+}
+
+
+using ERP.Mahadi.Desktop.UI.Features.Master.Company;
+using ERP.Mahadi.Domain.Interfaces.Data;
+using ERP.Mahadi.Domain.Shared.Configuration.BDSISTEMA;
+using ERP.Mahadi.Domain.Shared.Configuration.Exceptions;
+using ERP.Mahadi.Domain.Shared.Helpers;
+using Microsoft.Extensions.Logging;
+
+namespace ERP.Mahadi.Infrastructure.Security.Providers
+{
+    public class CompanyConnectionProvider : ICompanyConnectionProvider
+    {
+
+        //    private readonly ApplicationDbContext _context;
+        //    private readonly ILogger<CompanyConnectionProvider> _logger;
+
+        //    public CompanyConnectionProvider(
+        //        ApplicationDbContext context,
+        //        ILogger<CompanyConnectionProvider> logger)
+        //    {
+        //        _context = context;
+        //        _logger = logger;
+        //    }
+
+        //    public async Task<string> GetMainConnectionStringAsync(string ruc)
+        //    {
+        //        // 1. Buscar en nueva BD (ERP_MAHADI)
+        //        var companyCode = await _context.CompanyCodes
+        //            .Include(c => c.Company)
+        //            .FirstOrDefaultAsync(c => c.TaxIdentificationNumber == ruc && c.Status == "A");
+
+        //        if (companyCode != null)
+        //        {
+        //            // Conectar a la BD específica de esta empresa
+        //            // Por ahora, todas las empresas usan la misma BD (ERP_MAHADI)
+        //            // En futuro, podrían tener BDs separadas
+        //            var connectionString = BuildConnectionString(
+        //                companyCode.CompanyCodeValue, 
+        //                companyCode.TaxIdentificationNumber);
+
+        //            _logger.LogInformation("Conexión obtenida desde ERP_MAHADI para RUC: {Ruc}", ruc);
+        //            return connectionString;
+        //        }
+
+        //        // 2. Si no existe en nueva BD, intentar con sistema legacy (durante transición)
+        //        _logger.LogWarning("RUC {Ruc} no encontrado en ERP_MAHADI", ruc);
+        //        throw new CompanyNotFoundException($"Empresa con RUC {ruc} no encontrada en el sistema");
+        //    }
+
+        //    private string BuildConnectionString(string companyCode, string ruc)
+        //    {
+        //        // Por ahora, todas las empresas están en la misma BD
+        //        // Pero con esquemas separados o tablas con CompanyCode
+        //        return "Server=.;Database=ERP_MAHADI;Trusted_Connection=True;" +
+        //               $"Application Name=MahadiERP_{companyCode};" +
+        //               "MultipleActiveResultSets=true;Encrypt=false";
+
+        //        // En futuro multi-tenant con BDs separadas:
+        //        // return $"Server=.;Database=MAHADI_{companyCode};Trusted_Connection=True;";
+        //    }
+
+        //    public async Task<string> GetSupportConnectionStringAsync()
+        //    {
+        //        // Conexión a BD de soporte (siempre la misma)
+        //        return "Server=.;Database=ERP_SUPPORT;Trusted_Connection=True;";
+        //    }
+
+
+
+
+
+        private readonly EmpresasConfiguration _config;
+        private readonly ILogger<CompanyConnectionProvider> _logger;
+
+        // Inyectamos la configuración directamente (no IOptions)
+        public CompanyConnectionProvider(EmpresasConfiguration config, ILogger<CompanyConnectionProvider> logger)
+        {
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _logger = logger;
+        }
+
+        public EN_MiEmpresa GetCompanyByRuc(string ruc)
+        {
+            var empresa = _config.EmpresasPreconfiguradas.FirstOrDefault(e => e.Ruc == ruc);
+
+            if (empresa == null)
+            {
+                _logger.LogWarning("RUC no encontrado: {Ruc}", ruc);
+            }
+
+            return empresa;
+        }
+
+
+        public async Task<string> GetMainConnectionStringAsync(string ruc)
+        {
+            var empresa = GetCompanyByRuc(ruc);
+
+            if (empresa == null)
+                throw new CompanyNotFoundException($"Empresa con RUC {ruc} no encontrada");
+
+            // CORREGIR: Quitar la barra inicial si existe
+            string rutaArchivo = empresa.RutaConex.Trim();
+
+            if (rutaArchivo.StartsWith("\\") || rutaArchivo.StartsWith("/"))
+            {
+                rutaArchivo = rutaArchivo.Substring(1);
+            }
+
+            string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, rutaArchivo);
+
+            // Listar archivos .bin en el directorio para debug
+            if (!File.Exists(filePath))
+            {
+                var archivosBin = Directory.GetFiles(AppDomain.CurrentDomain.BaseDirectory, "*.bin");
+            }
+
+            if (!File.Exists(filePath))
+            {
+                throw new FileNotFoundException($"Archivo de conexión no encontrado: {filePath}");
+            }
+
+            return await Task.Run(() => EncryptionHelper.DecryptConnectionString(filePath));
+        }
+    }
+}
+
+
+using ERP.Mahadi.Desktop.UI.Features.Master.Company;
+using ERP.Mahadi.Domain.Entities.Master;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Domain.Shared.Contexts
+{
+    public class CompanyContext
+    {
+        public EN_MiEmpresa SelectedCompany { get; private set; }
+        public bool IsCompanySelected => SelectedCompany != null;
+        public string Tema { get; set; } = "Claro"; // "Claro" o "Oscuro"
+        public byte[] LogoEmpresa { get; set; } 
+        public void SetCompany(EN_MiEmpresa company)
+        {
+            SelectedCompany = company ?? throw new ArgumentNullException(nameof(company));
+        }
+
+        public void ClearCompany()
+        {
+            SelectedCompany = null;
+        }
+
+        public string GetConnectionFilePath()
+        {
+            if (SelectedCompany == null)
+                throw new InvalidOperationException("No hay empresa seleccionada");
+
+            return Tema == "Claro"
+                ? SelectedCompany.RutaConex
+                : SelectedCompany.RutaConex2;
+        }
+    }
+}
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Application.Infrastructure.Services
+{
+    public interface IInitialDataService
+    {
+        Task<bool> VerificarRegistrosInicialesAsync(string connectionString, string rucEmpresa);
+        Task<bool> CrearSedePruebaAsync(string connectionString, string rucEmpresa, string nombreSede);
+        Task<bool> VerificarEstructuraBaseDatosAsync(string connectionString);
+        Task<bool> CrearUsuarioAdministradorAsync(string connectionString, string rucEmpresa);
+        Task<bool> ExistenDatosInicialesAsync(string connectionString);
+    }
+}
+
+
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Data;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Application.Infrastructure.Services
+{
+    public class InitialDataService : IInitialDataService
+    {
+        private readonly ILogger<InitialDataService> _logger;
+
+        public InitialDataService(ILogger<InitialDataService> logger)
+        {
+            _logger = logger;
+        }
+
+        public async Task<bool> VerificarRegistrosInicialesAsync(string connectionString, string rucEmpresa)
+        {
+            try
+            {
+                // 1. Verificar si ya existen datos
+                bool existenDatos = await ExistenDatosInicialesAsync(connectionString);
+
+                if (existenDatos)
+                {
+                    _logger.LogInformation("La base de datos ya tiene datos iniciales para RUC: {Ruc}", rucEmpresa);
+                    return true;
+                }
+
+                // 2. Verificar estructura
+                bool estructuraValida = await VerificarEstructuraBaseDatosAsync(connectionString);
+                if (!estructuraValida)
+                {
+                    _logger.LogError("La estructura de la base de datos no es válida para RUC: {Ruc}", rucEmpresa);
+                    return false;
+                }
+
+                // 3. Crear sede de prueba
+                bool sedeCreada = await CrearSedePruebaAsync(connectionString, rucEmpresa, "SEDE PRINCIPAL");
+                if (!sedeCreada)
+                {
+                    _logger.LogError("No se pudo crear la sede de prueba para RUC: {Ruc}", rucEmpresa);
+                    return false;
+                }
+
+                // 4. Crear usuario administrador
+                bool adminCreado = await CrearUsuarioAdministradorAsync(connectionString, rucEmpresa);
+                if (!adminCreado)
+                {
+                    _logger.LogWarning("No se pudo crear usuario administrador para RUC: {Ruc}", rucEmpresa);
+                }
+
+                _logger.LogInformation("Registros iniciales creados exitosamente para RUC: {Ruc}", rucEmpresa);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al verificar registros iniciales para RUC: {Ruc}", rucEmpresa);
+                return false;
+            }
+        }
+
+        public async Task<bool> CrearSedePruebaAsync(string connectionString, string rucEmpresa, string nombreSede)
+        {
+            using var connection = new SqlConnection(connectionString);
+            using var command = new SqlCommand("Sp_CrearSedeInicial", connection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.AddWithValue("@Ruc", rucEmpresa);
+            command.Parameters.AddWithValue("@NombreSede", nombreSede);
+            command.Parameters.AddWithValue("@CodigoSede", "0001");
+            command.Parameters.AddWithValue("@Direccion", "DIRECCIÓN PRINCIPAL");
+            command.Parameters.AddWithValue("@Telefono", "000000000");
+            command.Parameters.AddWithValue("@EsActivo", true);
+
+            try
+            {
+                await connection.OpenAsync();
+                var result = await command.ExecuteScalarAsync();
+                return Convert.ToInt32(result) > 0;
+            }
+            catch (SqlException ex)
+            {
+                _logger.LogError(ex, "Error al crear sede de prueba para RUC: {Ruc}", rucEmpresa);
+                return false;
+            }
+        }
+
+        public async Task<bool> VerificarEstructuraBaseDatosAsync(string connectionString)
+        {
+            var tablasRequeridas = new[] { "EMPRESA", "M_Sedes", "si_usuario", "si_nivel" };
+
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            foreach (var tabla in tablasRequeridas)
+            {
+                var query = $"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{tabla}'";
+                using var command = new SqlCommand(query, connection);
+                var existe = Convert.ToInt32(await command.ExecuteScalarAsync()) > 0;
+
+                if (!existe)
+                {
+                    _logger.LogWarning("Tabla requerida no encontrada: {Tabla}", tabla);
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        public async Task<bool> CrearUsuarioAdministradorAsync(string connectionString, string rucEmpresa)
+        {
+            using var connection = new SqlConnection(connectionString);
+            using var command = new SqlCommand("Sp_CrearUsuarioAdministrador", connection)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.AddWithValue("@Ruc", rucEmpresa);
+            command.Parameters.AddWithValue("@Usuario", "admin");
+            command.Parameters.AddWithValue("@Contrasenia", "admin123"); // Debería encriptarse
+            command.Parameters.AddWithValue("@Nombre", "Administrador");
+            command.Parameters.AddWithValue("@Rol", "ADMINISTRADOR");
+            command.Parameters.AddWithValue("@CodigoSede", "0001");
+
+            try
+            {
+                await connection.OpenAsync();
+                var result = await command.ExecuteScalarAsync();
+                return Convert.ToInt32(result) > 0;
+            }
+            catch (SqlException ex)
+            {
+                _logger.LogError(ex, "Error al crear usuario administrador para RUC: {Ruc}", rucEmpresa);
+                return false;
+            }
+        }
+
+        public async Task<bool> ExistenDatosInicialesAsync(string connectionString)
+        {
+            using var connection = new SqlConnection(connectionString);
+
+            var query = @"
+                SELECT CASE 
+                        WHEN EXISTS(SELECT 1 FROM M_Sedes) AND 
+                             EXISTS(SELECT 1 FROM si_usuario) 
+                        THEN 1 ELSE 0 
+                    END";
+
+            using var command = new SqlCommand(query, connection);
+
+            try
+            {
+                await connection.OpenAsync();
+                var result = await command.ExecuteScalarAsync();
+                return Convert.ToInt32(result) == 1;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al verificar datos iniciales");
+                return false;
+            }
+        }
+    }
+}
+
+using ERP.Mahadi.Domain.Common.Interfaces;
+using ERP.Mahadi.Domain.Interfaces.Repositories.Legacy;
+using ERP.Mahadi.Domain.Master.Inventory;
+using ERP.Mahadi.Infrastructure.Security.Authentication;
+using ERP.Mahadi.Persistence.Repositories.Inventory;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace ERP.Mahadi.Persistence
+{
+    public static class DependencyInjection
+    {
+        public static IServiceCollection AddPersistence(
+            this IServiceCollection services,
+            IConfiguration configuration)
+        {
+            // 1. EF Core DbContext para ERP_MAHADI (nueva BD)
+            var erpConnectionString = configuration.GetConnectionString("ERP_MAHADI");
+
+            if (string.IsNullOrEmpty(erpConnectionString))
+            {
+                throw new InvalidOperationException("Connection string 'ERP_MAHADI' not found.");
+            }
+
+            services.AddDbContext<ApplicationDbContext>(options =>
+                options.UseSqlServer(erpConnectionString,
+                    sqlOptions =>
+                    {
+                        sqlOptions.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+                        sqlOptions.EnableRetryOnFailure(
+                                                        maxRetryCount: 5,
+                                                        maxRetryDelay: TimeSpan.FromSeconds(30),
+                                                        errorNumbersToAdd: null);// Parámetro requerido en EF Core 8
+                    }));
+
+            // 2. Registrar DbContext como IApplicationDbContext
+            services.AddScoped<IApplicationDbContext>(provider =>
+                provider.GetRequiredService<ApplicationDbContext>());
+
+            // 3. Repositorios EF Core
+            services.AddScoped<IUsuarioRepository_Legacy, UsuarioRepository_Legacy>();
+            services.AddScoped<IInventoryRepository, InventoryRepository>();
+
+            // 4. UnitOfWork (si lo implementas)
+            // services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+            return services;
+        }
+    }
+}
+
+using ERP.Mahadi.Application.Services;
+using ERP.Mahadi.Domain.Interfaces.Data;
+using ERP.Mahadi.Domain.Interfaces.Repositories.Legacy;
+using ERP.Mahadi.Domain.Interfaces.Security;
+using ERP.Mahadi.Domain.Shared.Configuration.BDSISTEMA;
+using ERP.Mahadi.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+
+
+namespace ERP.Mahadi.Application.Security.Services
+{
+    public class AuthenticationService2 : IAuthenticationService
+    {
+        private readonly IUsuarioRepository_Legacy _usuarioRepository;//=
+        private readonly ICompanyConnectionProvider _companyProvider;//=
+        private readonly ILogger<AuthenticationService2> _logger;//=
+        private readonly ApplicationDbContext _context;
+        private readonly EmpresasConfiguration _legacyConfig;
+        private readonly CompanyMigrationService _companyMigrationService;
+
+        public AuthenticationService2(
+            IUsuarioRepository_Legacy usuarioRepository,
+            ICompanyConnectionProvider companyProvider,
+            ILogger<AuthenticationService2> logger,
+            ApplicationDbContext context,
+            EmpresasConfiguration legacyConfig,
+            CompanyMigrationService companyMigrationService)
+        {
+            _usuarioRepository = usuarioRepository;
+            _companyProvider = companyProvider;
+            _logger = logger;
+            _context = context;
+            _legacyConfig = legacyConfig;
+            _companyMigrationService = companyMigrationService;
+        }
+
+        public async Task<AuthenticationResult> AutenticarAsync(string rucEmpresa, string usuario, string contrasenia)
+        {
+            try
+            {
+                _logger.LogInformation("Iniciando autenticación para usuario: {Usuario}, Empresa: {Ruc}", usuario, rucEmpresa);
+
+                // 1. Verificar que la empresa exista en nuevo sistema (ERP_MAHADI)
+                var companyCode = await _context.CompanyCodes
+                    .FirstOrDefaultAsync(c => c.TaxIdentificationNumber == rucEmpresa && c.Status.Code == "A");
+
+                if (companyCode == null)
+                {
+                    _logger.LogWarning("Empresa {Ruc} no encontrada en ERP_MAHADI. Buscando en configuración legacy...", rucEmpresa);
+
+                    // 2. Si no existe, buscar en configuración legacy
+                    var legacyEmpresa = _legacyConfig.EmpresasPreconfiguradas
+                        .FirstOrDefault(e => e.Ruc == rucEmpresa);
+
+                    if (legacyEmpresa != null)
+                    {
+                        _logger.LogInformation("Migrando empresa {Nombre} (RUC: {Ruc}) desde legacy...",
+                            legacyEmpresa.Nombre, legacyEmpresa.Ruc);
+
+                        // Migrar empresa automáticamente
+                        await _companyMigrationService.MigrateCompaniesFromLegacyAsync();
+
+                        // Volver a buscar en nueva BD
+                        companyCode = await _context.CompanyCodes
+                            .FirstOrDefaultAsync(c => c.TaxIdentificationNumber == rucEmpresa);
+                    }
+
+                    if (companyCode == null)
+                    {
+                        _logger.LogError("Empresa {Ruc} no encontrada en ningún sistema", rucEmpresa);
+                        return AuthenticationResult.CrearError($"Empresa {rucEmpresa} no encontrada", "COMPANY_NOT_FOUND");
+                    }
+                }
+
+                _logger.LogInformation("Empresa validada: {Nombre} (RUC: {Ruc})",
+                    companyCode.LegalName, companyCode.TaxIdentificationNumber);
+
+                // 3. Obtener conexión para BDSISTEMA (legacy durante transición)
+                string connectionString = await _companyProvider.GetMainConnectionStringAsync(rucEmpresa);
+
+                // 4. Verificar si usuario está bloqueado en legacy
+                bool estaBloqueado = await _usuarioRepository.UsuarioEstaBloqueadoAsync(usuario, connectionString);
+                if (estaBloqueado)
+                {
+                    _logger.LogWarning("Intento de login para usuario bloqueado: {Usuario}", usuario);
+                    return AuthenticationResult.CrearError("Usuario bloqueado. Contacte al administrador.", "AUTH_BLOCKED");
+                }
+
+                // 5. Autenticar en BDSISTEMA (durante transición)
+                var usuarioInfo = await _usuarioRepository.AutenticarAsync(usuario, contrasenia, connectionString);
+
+                if (usuarioInfo == null)
+                {
+                    // Registrar intento fallido
+                    await _usuarioRepository.RegistrarIntentoFallidoAsync(usuario, connectionString);
+
+                    // Verificar si se debe bloquear
+                    var intentos = await _usuarioRepository.ObtenerIntentosFallidosAsync(usuario, connectionString);
+                    if (intentos >= 3)
+                    {
+                        await _usuarioRepository.BloquearUsuarioAsync(usuario, "Demasiados intentos fallidos", connectionString);
+                        return AuthenticationResult.CrearError("Usuario bloqueado por demasiados intentos fallidos", "AUTH_LOCKED");
+                    }
+
+                    return AuthenticationResult.CrearError("Usuario o contraseña incorrectos", "AUTH_INVALID");
+                }
+
+                // 6. Verificar si requiere cambio de contraseña
+                bool requiereCambio = await _usuarioRepository.RequiereCambioContraseniaAsync(usuarioInfo.IdUsuario, connectionString);
+                if (requiereCambio)
+                {
+                    _logger.LogInformation("Usuario {Usuario} requiere cambio de contraseña", usuario);
+                    return AuthenticationResult.RequiereCambio("Debe cambiar su contraseña", usuarioInfo);
+                }
+
+                // 7. Resetear intentos fallidos y registrar login exitoso
+                await _usuarioRepository.ResetearIntentosFallidosAsync(usuario, connectionString);
+                await _usuarioRepository.RegistrarLoginExitosoAsync(usuarioInfo.IdUsuario, connectionString);
+
+                // 8. Obtener permisos y accesos desde legacy
+                usuarioInfo.Permisos = await _usuarioRepository.ObtenerPermisosAsync(usuarioInfo.IdUsuario, connectionString);
+                usuarioInfo.Accesos = await _usuarioRepository.ObtenerAccesosAsync(usuarioInfo.IdUsuario, connectionString);
+
+                // 9. Establecer contexto de empresa seleccionada
+                usuarioInfo.CompanyCode = companyCode.Code;
+                usuarioInfo.CompanyRuc = companyCode.TaxIdentificationNumber;
+                usuarioInfo.CompanyName = companyCode.LegalName;
+
+                _logger.LogInformation("Autenticación exitosa: {Usuario} - {Empresa} - {Nombre}",
+                    usuario, rucEmpresa, usuarioInfo.NombreCompleto);
+
+                return AuthenticationResult.Exitoso(usuarioInfo);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error en autenticación para usuario: {Usuario}, Empresa: {Ruc}", usuario, rucEmpresa);
+                return AuthenticationResult.CrearError($"Error en autenticación: {ex.Message}", "AUTH_ERROR");
+            }
+        }
+
+        // Métodos adicionales de la interfaz (implementaciones simples)
+        public async Task<bool> CambiarContraseniaAsync(string rucEmpresa, string usuario, string contraseniaActual, string contraseniaNueva)
+        {
+            try
+            {
+                var connectionString = await _companyProvider.GetMainConnectionStringAsync(rucEmpresa);
+                return await _usuarioRepository.CambiarContraseniaAsync(usuario, contraseniaActual, contraseniaNueva, connectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al cambiar contraseña para usuario: {Usuario}", usuario);
+                return false;
+            }
+        }
+
+        public async Task<UsuarioInfo?> ObtenerUsuarioAsync(string rucEmpresa, string usuario)
+        {
+            try
+            {
+                var connectionString = await _companyProvider.GetMainConnectionStringAsync(rucEmpresa);
+                return await _usuarioRepository.ObtenerUsuarioAsync(usuario, connectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al obtener usuario: {Usuario}", usuario);
+                return null;
+            }
+        }
+
+        public async Task<bool> BloquearUsuarioAsync(string rucEmpresa, string usuario, string motivo)
+        {
+            try
+            {
+                var connectionString = await _companyProvider.GetMainConnectionStringAsync(rucEmpresa);
+                return await _usuarioRepository.BloquearUsuarioAsync(usuario, motivo, connectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al bloquear usuario: {Usuario}", usuario);
+                return false;
+            }
+        }
+
+        public async Task<bool> DesbloquearUsuarioAsync(string rucEmpresa, string usuario)
+        {
+            try
+            {
+                var connectionString = await _companyProvider.GetMainConnectionStringAsync(rucEmpresa);
+                return await _usuarioRepository.DesbloquearUsuarioAsync(usuario, connectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al desbloquear usuario: {Usuario}", usuario);
+                return false;
+            }
+        }
+
+        // Implementar estos si los necesitas
+        public Task<bool> ValidarSesionAsync(string token)
+        {
+            throw new NotImplementedException("ValidarSesionAsync no implementado aún");
+        }
+
+        public Task<bool> CerrarSesionAsync(string usuario)
+        {
+            throw new NotImplementedException("CerrarSesionAsync no implementado aún");
+        }
+    }
+}
+
+using ERP.Mahadi.Desktop.UI.Features.Master.Company;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Domain.Shared.Configuration.BDSISTEMA
+{
+    public class EmpresasConfiguration
+    {
+        public List<EN_MiEmpresa> EmpresasPreconfiguradas { get; set; } = GetEmpresasPorDefecto();
+
+        private static List<EN_MiEmpresa> GetEmpresasPorDefecto()
+        {
+            return new List<EN_MiEmpresa>
+            {
+                new EN_MiEmpresa
+                {
+                    Ruc = "20602348157",
+                    Nombre = "MAHADI",
+                    NombreSIG = "SIG MAHADI",
+                    RutaConex = @"\Mahadi_FE.bin",
+                    RutaConex2 = @"\Mahadi_FE2.bin"
+                },
+                new EN_MiEmpresa
+                {
+                    Ruc = "20609578611",
+                    Nombre = "FRAMATEC",
+                    NombreSIG = "SIG FRAMATEC",
+                    RutaConex = @"\Framatec_FE.bin",
+                    RutaConex2 = @"\Framatec_FE2.bin"
+                },
+                new EN_MiEmpresa
+                {
+                    Ruc = "20609759845",
+                    Nombre = "HANSTRATEL",
+                    NombreSIG = "SIG HANSTRATEL",
+                    RutaConex = @"\Hanstratel_FE.bin",
+                    RutaConex2 = @"\Hanstratel_FE2.bin"
+                },
+                new EN_MiEmpresa
+                {
+                    Ruc = "20605365982",
+                    Nombre = "INFITEL",
+                    NombreSIG = "SIG INFITEL",
+                    RutaConex = @"\Infitel_FE.bin",
+                    RutaConex2 = @"\Infitel_FE2.bin"
+                }
+            };
+        }
+    }
+
+}
+
+using ERP.Mahadi.Domain.Common;
+using ERP.Mahadi.Domain.Common.Interfaces;
+using ERP.Mahadi.Domain.Entities.Billing;
+using ERP.Mahadi.Domain.Entities.Master;
+using ERP.Mahadi.Domain.Entities.Security;
+using Microsoft.EntityFrameworkCore;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Persistence
+{
+
+    public class ApplicationDbContext : DbContext, IApplicationDbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+            : base(options) { }
+
+        //Schema master
+        public DbSet<Company> Companies => Set<Company>();
+        public DbSet<CompanyCode> CompanyCodes => Set<CompanyCode>();
+        public DbSet<Addresses> Addresses => Set<Addresses>();
+        public DbSet<Plant> Plants => Set<Plant>();
+        public DbSet<SalesOrganization> SalesOrganizations => Set<SalesOrganization>();
+        public DbSet<ProfitCenter> ProfitCenters => Set<ProfitCenter>();
+        public DbSet<Establishment> Establishments => Set<Establishment>();
+        public DbSet<EstablishmentPlant> EstablishmentPlants => Set<EstablishmentPlant>();
+        public DbSet<EstablishmentSalesOrg> EstablishmentSalesOrgs => Set<EstablishmentSalesOrg>();
+
+        // billing
+        public DbSet<EmissionPointType> EmissionPointTypes => Set<EmissionPointType>();
+        public DbSet<DocumentType> DocumentTypes => Set<DocumentType>();
+        public DbSet<DocumentSeriesStatus> DocumentSeriesStatuses => Set<DocumentSeriesStatus>();
+        public DbSet<EmissionPoint> EmissionPoints => Set<EmissionPoint>();
+        public DbSet<DocumentSeries> DocumentSeries => Set<DocumentSeries>();
+
+        // security
+        public DbSet<User> Users => Set<User>();
+        public DbSet<Role> Roles => Set<Role>();
+        public DbSet<UserRole> UserRoles => Set<UserRole>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            // Configurar schemas
+            modelBuilder.Entity<Company>().ToTable("Companies", "master");
+            modelBuilder.Entity<CompanyCode>().ToTable("CompanyCodes", "master");
+            modelBuilder.Entity<Establishment>().ToTable("Establishments", "master");
+            modelBuilder.Entity<Addresses>().ToTable("Addresses", "master");
+
+            // Aplicar configuraciones
+            modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+        }
+
+        public override async Task<int> SaveChangesAsync(
+            CancellationToken cancellationToken = default)
+        {
+            UpdateAuditFields();
+            return await base.SaveChangesAsync(cancellationToken);
+        }
+
+        private void UpdateAuditFields()
+        {
+            foreach (var entry in ChangeTracker.Entries<BaseEntity>())
+            {
+                if (entry.State == EntityState.Added)
+                {
+                    // CreatedOn ya se establece en constructor - nada que hacer
+                }
+                else if (entry.State == EntityState.Modified)
+                {
+                    // Ahora puede acceder porque es public
+                    entry.Entity.UpdateAuditFields();
+                }
+            }
+        }
+    }
+}
+
+using ERP.Mahadi.Desktop.UI.Features.Master.Company;
+using ERP.Mahadi.Domain.Entities.Master;
+using ERP.Mahadi.Domain.Master;
+using ERP.Mahadi.Domain.Shared.Configuration.BDSISTEMA;
+using ERP.Mahadi.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Application.Services
+{
+    public class CompanyMigrationService
+    {
+        private readonly EmpresasConfiguration _legacyConfig;
+        private readonly ApplicationDbContext _context;
+        private readonly ILogger<CompanyMigrationService> _logger;
+
+        public CompanyMigrationService(
+            EmpresasConfiguration legacyConfig,
+            ApplicationDbContext context,
+            ILogger<CompanyMigrationService> logger)
+        {
+            _legacyConfig = legacyConfig;
+            _context = context;
+            _logger = logger;
+        }
+
+        public async Task<int> MigrateCompaniesFromLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            _logger.LogInformation("Iniciando migración de empresas desde configuración legacy...");
+
+            int migratedCount = 0;
+
+            foreach (var legacyEmpresa in _legacyConfig.EmpresasPreconfiguradas)
+            {
+                // Verificar si ya existe en nueva BD
+                var exists = await _context.CompanyCodes
+                    .AnyAsync(c => c.TaxIdentificationNumber == legacyEmpresa.Ruc, cancellationToken);
+
+                if (!exists)
+                {
+                    await CreateCompanyInNewSystemAsync(legacyEmpresa, cancellationToken);
+                    migratedCount++;
+                }
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Migración de empresas completada. Total: {Count}", migratedCount);
+
+            return migratedCount;
+        }
+
+        private async Task CreateCompanyInNewSystemAsync(EN_MiEmpresa legacyEmpresa, CancellationToken cancellationToken)
+        {
+            try
+            {
+                // 1. Crear Company (holding/grupo)
+                var company = new Company(
+                    groupCode: GenerateGroupCode(legacyEmpresa.Nombre),
+                    groupName: legacyEmpresa.Nombre,
+                    description: $"Migrado desde sistema legacy - {legacyEmpresa.NombreSIG}");
+
+                _context.Companies.Add(company);
+                await _context.SaveChangesAsync(cancellationToken); // Para obtener Id
+
+                // 2. Crear CompanyCode (sociedad/RUC)
+                var companyCode = new CompanyCode(
+                    code: GenerateCompanyCode(legacyEmpresa.Ruc),
+                    taxId: legacyEmpresa.Ruc,
+                    legalName: legacyEmpresa.Nombre,
+                    companyId: company.Id);
+
+                companyCode.UpdateFinancialSettings("INT", "PEN", "PE", "ES");
+
+                if (!string.IsNullOrEmpty(legacyEmpresa.NombreSIG))
+                {
+                    companyCode.UpdateDetails(legacyEmpresa.Nombre, legacyEmpresa.NombreSIG);
+                }
+
+                _context.CompanyCodes.Add(companyCode);
+                await _context.SaveChangesAsync(cancellationToken);
+
+                // 3. Crear dirección principal
+                var address = new Addresses(
+                    addressLine1: "Dirección principal (actualizar)",
+                    city: "Lima",
+                    countryCode: "PE",
+                    stateProvince: "Lima");
+
+                _context.Addresses.Add(address);
+                await _context.SaveChangesAsync(cancellationToken);
+
+                // 4. Crear establecimiento principal (matriz)
+
+                var establishment = new Establishment(
+                                        code: "0001",
+                                        companyCode: companyCode.Code,
+                                        name: $"{legacyEmpresa.Nombre} - Matriz",
+                                        address: address,
+                                        establishmentTypeId: 1,// HEADQUARTERS
+                                        statusId: 1,// ACTIVE
+                                        createdBy: "MIGRATION_SYSTEM");
+
+                establishment.UpdateCommercialName(legacyEmpresa.NombreSIG);
+                establishment.MarkAsFiscalDomicile("MIGRATION_SYSTEM");
+                establishment.UpdateOperatingInfo(
+                    hasPointOfSale: true,
+                    hasWarehouse: true,
+                    hasServiceCenter: false);
+
+                _context.Establishments.Add(establishment);
+                await _context.SaveChangesAsync(cancellationToken);
+
+                _logger.LogInformation("Empresa migrada: {Nombre} (RUC: {Ruc})",
+                    legacyEmpresa.Nombre, legacyEmpresa.Ruc);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error migrando empresa {Ruc}: {Message}",
+                    legacyEmpresa.Ruc, ex.Message);
+                throw;
+            }
+        }
+
+        private string GenerateGroupCode(string nombre)
+        {
+            return nombre.Length >= 4
+                ? nombre.Substring(0, 4).ToUpper()
+                : nombre.PadRight(4, 'X').ToUpper();
+        }
+
+        private string GenerateCompanyCode(string ruc)
+        {
+            return ruc.Length >= 4
+                ? ruc.Substring(ruc.Length - 4)
+                : ruc.PadLeft(4, '0');
+        }
+    }
+}
+
+using ERP.Mahadi.Application.Services;
+using ERP.Mahadi.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Background.Services
+{
+
+    public class InitialMigrationService : BackgroundService
+    {
+        private readonly IServiceProvider _serviceProvider;
+        private readonly ILogger<InitialMigrationService> _logger;
+        private readonly IHostApplicationLifetime _appLifetime;
+
+        public InitialMigrationService(
+            IServiceProvider serviceProvider,
+            ILogger<InitialMigrationService> logger,
+            IHostApplicationLifetime appLifetime)
+        {
+            _serviceProvider = serviceProvider;
+            _logger = logger;
+            _appLifetime = appLifetime;
+        }
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                // Esperar a que la aplicación esté completamente iniciada
+                await Task.Delay(TimeSpan.FromSeconds(3), stoppingToken);
+
+                _logger.LogInformation("=== INICIANDO MIGRACIÓN AUTOMÁTICA DE EMPRESAS ===");
+
+                using var scope = _serviceProvider.CreateScope();
+                var migrationService = scope.ServiceProvider.GetRequiredService<CompanyMigrationService>();
+                var context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+                // 1. Verificar si ya hay empresas migradas
+                var existingCompanies = await context.Companies.CountAsync(stoppingToken);
+
+                if (existingCompanies > 0)
+                {
+                    _logger.LogInformation("Ya existen {Count} empresas migradas. Saltando migración inicial.", existingCompanies);
+                    return;
+                }
+
+                // 2. Ejecutar migración
+                _logger.LogInformation("No hay empresas migradas. Iniciando migración desde configuración legacy...");
+
+                var migratedCount = await migrationService.MigrateCompaniesFromLegacyAsync(stoppingToken);
+
+                _logger.LogInformation("=== MIGRACIÓN COMPLETADA ===");
+                _logger.LogInformation("Total empresas migradas: {Count}", migratedCount);
+                _logger.LogInformation("=== ==================== ===");
+
+                // 3. Opcional: Notificar al usuario (por logging o UI)
+                // Podrías publicar un evento o actualizar estado en DB
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "=== ERROR CRÍTICO EN MIGRACIÓN INICIAL ===");
+
+                // Opcional: Detener la aplicación si la migración es crítica
+                // _appLifetime.StopApplication();
+
+                // O continuar y permitir migración manual
+                _logger.LogWarning("La aplicación continuará sin migración automática. Las empresas se migrarán al primer login.");
+            }
+        }
+
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            _logger.LogInformation("Servicio de migración inicial detenido.");
+            await base.StopAsync(cancellationToken);
+        }
+    }
+}
+
+using ERP.Mahadi.Application;
+using ERP.Mahadi.Application.Services;
+using ERP.Mahadi.Background.Services;
+using ERP.Mahadi.Domain.Shared.Configuration;
+using ERP.Mahadi.Domain.Shared.Configuration.BDSISTEMA;
+using ERP.Mahadi.Domain.Shared.Contexts;
+using ERP.Mahadi.Infrastructure;
+using ERP.Mahadi.Persistence;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace SigMahadi_H
+{
+    internal static class Program
+    {
+        public static IServiceProvider ServiceProvider { get; private set; }
+        /// <summary>
+        ///  The main entry point for the application.
+        /// </summary>
+        [STAThread]
+        static void Main()
+        {
+            // To customize application configuration such as set high DPI settings or default font,
+            // see https://aka.ms/applicationconfiguration.
+            ApplicationConfiguration.Initialize();
+
+            // Configurar Host
+            var host = CreateHostBuilder().Build();
+            ServiceProvider = host.Services;
+
+            var loginForm = ServiceProvider.GetRequiredService<LoginForm>();
+            var result = loginForm.ShowDialog();
+
+            if (result == DialogResult.OK)
+            {
+                // Login exitoso, abrir formulario principal
+                var mainForm = ServiceProvider.GetRequiredService<Form1>();
+                Application.Run(mainForm);
             }
             else
             {
-                contador++;
-                RJMessageBox.Show($"RUC NO ESTÁ HABILITADO PARA USAR ESTE PROGRAMA\nSi Se equivocó al Digitar, Corrija y Vuelva a intentar\nLe quedan {3 - contador} intentos", "MENSAJE", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                if (contador == 3)
+                // Usuario canceló login
+                Application.Exit();
+            }
+        }
+
+        static IHostBuilder CreateHostBuilder()
+        {
+            return Host.CreateDefaultBuilder()
+                .ConfigureServices((context, services) =>
                 {
-                    this.Close();
-                }
-            }
+                    // ===== 1. CONFIGURACIÓN =====
+                    services.Configure<DatabaseSettings>(
+                        context.Configuration.GetSection("DatabaseSettings"));
+                    services.Configure<AppSettings>(
+                        context.Configuration.GetSection("AppSettings"));
+                    services.Configure<SupportDatabaseSettings>(
+                        context.Configuration.GetSection("SupportDatabaseSettings"));
 
+                    // ===== 2. CONTEXTOS DE DOMINIO =====
+                    services.AddScoped<CompanyContext>();
+                    services.AddScoped<UserContext>();
+                    services.AddSingleton<EmpresasConfiguration>();
+
+                    // ===== 3. REGISTRO DE CAPAS =====
+                    services.AddApplication();                    // Application Layer
+                    services.AddPersistence(context.Configuration); // Persistence Layer
+                    services.AddInfrastructure(context.Configuration); // Infrastructure Layer
+
+                    // ===== 4. SERVICIO DE MIGRACIÓN =====
+                    services.AddScoped<CompanyMigrationService>();
+                    // ===== 5. EJECUTAR MIGRACIÓN INICIAL (solo primera vez) =====
+                    services.AddHostedService<InitialMigrationService>();
+
+                    // ===== 4. FORMULARIOS =====
+                    services.AddTransient<LoginForm>();
+                    services.AddTransient<Form1>();
+
+                    // ===== 5. LOGGING =====
+                    services.AddLogging();
+                });
         }
 
-        private void txt_RucEmpreaa_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Enter)
-            {
-                btn_validaRuc_Click(sender, e);
-            }
-        }
-
-        private void btn_validaRuc_Enter(object sender, EventArgs e)
-        {
-            btn_validaRuc.FillColor = Color.Orange;
-        }
-
-        private void btn_validaRuc_Leave(object sender, EventArgs e)
-        {
-            btn_validaRuc.FillColor = Color.FromArgb(((int)(((byte)(128)))), ((int)(((byte)(255)))), ((int)(((byte)(128)))));
-        }
-
-        private void cb_nomSede_SelectionChangeCommitted(object sender, EventArgs e)
-        {
-            cargarCodSerieDocSunat();
-
-            if (string.IsNullOrEmpty(CrearCodSerieDocSunat))
-            {
-                MessageBox.Show($"Sede {cmb_nomSede.Text} no tiene Asignada series para Documentos de Venta. Por favor elija otra sede y diríjase al maestro de Sedes y asignarlas", "", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                cmb_nomSede.SelectedIndex = 0;
-                return;
-            }
-        }
-
-
-        #endregion
-
-
-        #region -> Métodos privados
-
-        private void AddControlBox()
-        {//Agregar los botones de control (Maximizar, cerrar y minimizar)
-            this.Controls.Add(this.btnClose);
-            this.Controls.Add(this.btnMinimize);
-            this.btnClose.Height = 20;
-            this.btnClose.Location = new Point(this.Width - btnClose.Width, 0);
-
-            this.btnMinimize.Height = 20;
-            this.btnMinimize.Location = new Point(this.btnClose.Location.X - btnMinimize.Width, 0);
-        }
-        private void ApplyAppearanceSettings()
-        {//Aplicar las propiedades de apariencia de la configuración.
-
-            this.PrimaryForm = true;//Establecer como formulario primario.
-            this.Resizable = false;//Establecer que el formulario no se puede cambiar de tamaño desde los bordes.
-            this.BorderSize = 0;//Quitar el borde.
-            this.BackColor = UIAppearance.BackgroundColor;//Establecer el color de fondo
-
-            if (UIAppearance.Theme == UITheme.Light)//si el tema es CLARO, establecer los botones de maximizar, minimizar y cerrar en negro.
-            {
-                this.btnClose.Image = Properties.Resources.CloseDark;
-                this.btnMaximize.Image = Properties.Resources.MaximizeDark;
-                this.btnMinimize.Image = Properties.Resources.MinimizeDark;
-            }
-        }
-
-        private bool Validar_texto()
-        {
-            var fil = new Frm_Filtro();
-
-            if (this.txt_usu.Text.Trim().Length < 2)
-            {
-                fil.Show(); MessageBox.Show("Ingresa tu Nombre de Usuario", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation); txt_usu.Focus();
-                this.lblMessage.Text = "*Por favor, ingrese su nombre de usuario";
-                this.lblMessage.Visible = true;
-                return false;
-            }
-            if (this.txt_pass.Text.Trim().Length < 2)
-            {
-                fil.Show(); MessageBox.Show("Ingresa tu Clave", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation); txt_pass.Focus();
-                this.lblMessage.Text = "*Por favor, introduzca su contraseña";
-                this.lblMessage.Visible = true;
-                return false;
-            }
-            return true;
-        }
-
-        private bool Validar_combobox()
-        {
-            var fil = new Frm_Filtro();
-
-            if (this.cmb_empresaLogin.Text.Trim().Length < 2) 
-            {
-                fil.Show(); 
-                MessageBox.Show("Selecciona la Empresa", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                this.cmb_empresaLogin.Focus();
-                this.cmb_empresaLogin.DroppedDown = true;
-                return false; 
-            }
-            if (cmb_nomSede.Text.Trim() == "" || cmb_nomSede.Text.Trim() == "Seleccionar Sede") 
-            { 
-                fil.Show(); 
-                MessageBox.Show("Selecciona la Sede", "Login", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                this.cmb_nomSede.Focus();
-                this.cmb_nomSede.DroppedDown = true;
-                return false; 
-            }
-
-            return true;
-        }
-
-
-        private void cargarNomEmpresa()
-        {
-            try
-            {
-                var obj = new RN_empresa();
-                var dato = new DataTable();
-                dato = obj.RN_Cargar_cmb_Empresa();
-                this.cmb_empresaLogin.DataSource = null;
-                this.cmb_empresaLogin.Items.Clear();
-                if ((dato is null ? 0 : dato.Rows.Count)>0)
-                {
-                    //DataRow fila1 = dato.NewRow();
-                    //fila1["NomEmpresa"] = "Seleccionar Empresa";
-                    //dato.Rows.InsertAt(fila1, 0);
-                    this.cmb_empresaLogin.ValueMember = "CodEmpresa";
-                    this.cmb_empresaLogin.DisplayMember = "NomEmpresa";
-                    this.cmb_empresaLogin.DataSource = dato;
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("" + ex);
-            }
-        }
-
-
-        private void cargarNomSede()
-        {
-            if (cmb_empresaLogin.Text.Trim() != "") 
-            {
-                RN_empresa emp = new RN_empresa();
-                if (emp.RN_Login_registros_inicial_Sede() == true)
-                {
-                    RN_Sedes obj = new RN_Sedes();
-                    DataTable dato = new DataTable();
-                    dato = obj.RN_Mostrar_nomSede();
-                    cmb_nomSede.DataSource = null;
-                    cmb_nomSede.Items.Clear();
-                    try
-                    {
-                        if ((dato is null ? 0 : dato.Rows.Count)>0)
-                        {
-                            DataRow fila1 = dato.NewRow();
-                            fila1["NOMSEDE"] = "Seleccionar Sede";
-                            dato.Rows.InsertAt(fila1, 0);
-
-                            cmb_nomSede.ValueMember = "CODSEDE";
-                            cmb_nomSede.DisplayMember = "NOMSEDE";
-                            cmb_nomSede.DataSource = dato;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show("" + ex);
-                    }
-                }
-                else
-                {
-                    Frm_Primera_Sede frm = new Frm_Primera_Sede();
-                    frm.lbl_id_empresa.Text = cmb_empresaLogin.SelectedValue.ToString().Trim();
-                    frm.ShowDialog();
-                }
-            }
-        }
-
-        int veces = 0;
-        private void Login()
-        {
-            try
-            {
-                var obj = new RN_Usuario();
-                var dato = new DataTable();
-
-                string usu = txt_usu.Text.Trim().ToUpper();
-                string pass = txt_pass.Text;
-                string serialPC = Cls_Libreria.SeriePC;
-                string serialMAC = Cls_Libreria.SerialMAC;
-                Cls_Libreria.CodEmpresa = cmb_empresaLogin.SelectedValue.ToString().Trim();
-                Cls_Libreria.NomEmpresa = cmb_empresaLogin.Text.Trim();
-                Cls_Libreria.CodSede = cmb_nomSede.SelectedValue.ToString().Trim();
-                Cls_Libreria.NomSede = cmb_nomSede.GetItemText(cmb_nomSede.SelectedItem).Trim();
-
-                string CodSerieDocSunat = RN_Sedes.RN_Mostrar_CodSerieDocSunat(Cls_Libreria.CodSede);
-                //Se Carga Por Primera Vez
-                if (string.IsNullOrEmpty(CodSerieDocSunat))
-                {
-                    RJMessageBox.Show("No existe serie de Facturación en Maestro Sedes", "ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-                else
-                {
-                    Cls_Libreria.CodSerieSunat = CodSerieDocSunat;
-
-                }
-
-                if (Validar_texto() == false) return;
-                if (Validar_combobox() == false) return;
-                if (obj.RN_ValidarVersionSistema(lblVersion.Text.Trim()) is true)
-                {
-
-                    if (obj.RN_LoginPCautorizada(serialPC, serialMAC, usu) == true)
-                    {
-                        if (obj.RN_Login(usu, pass) == true)
-                        {
-                            dato = obj.RN_Buscar_Usuario(usu);
-
-                            if ((dato is null ? 0 : dato.Rows.Count) > 0)
-                            {
-                                DataRow dr = dato.Rows[0];
-                                Cls_Libreria.IdRol = dr["Nivel"].ToString().Trim();
-                                Cls_Libreria.Nombre = dr["NombreCompleto"].ToString().Trim();
-                                if ((dr["Foto"]) != DBNull.Value)
-                                {
-                                    byte[] b = (Byte[])dr["Foto"];
-                                    Cls_Libreria.Foto = b;
-                                }
-                                Cls_Libreria.Rol = dr["Descripcion"].ToString().Trim();
-                                Cls_Libreria.IdUsu = dr["IdUsuario"].ToString().Trim().ToUpper();
-                                Cls_Libreria.DNI = dr["DNI"].ToString().Trim();
-                                Cls_Libreria.IdAcceso = Convert.ToInt32(dr["IdAcceso"].ToString().Trim());
-                                Cls_Libreria.FirstName = dr["Nombres"].ToString().Trim();
-                                Cls_Libreria.LastName = dr["Apellidos"].ToString().Trim();
-                                Cls_Libreria.Mail = dr["Mail"].ToString().Trim();
-                                Cls_Libreria.PhoneNumber = dr["Tele02"].ToString().Trim();
-                                Cls_Libreria.Birthday = Convert.ToDateTime("01/02/1984");
-                                Cls_Libreria.Contrasenia = dr["Clave"].ToString().Trim();
-                                Cls_Libreria.DiaNac = Convert.ToInt16(dr["DiaNac"].ToString().Trim());
-                                Cls_Libreria.MesNac = Convert.ToInt16(dr["MesNac"].ToString().Trim());
-                                Cls_Libreria.zonal = dr["IDZONA"].ToString().Trim();
-                                Cls_Libreria.Hora_IncioLabor = dr["Hora_IncioLabor"].ToString().Trim();
-                                Cls_Libreria.Hora_FinLabor = dr["Hora_FinLabor"].ToString().Trim();
-                                Cls_Libreria.IdEmpleado = dr["IdEmpleado"].ToString().Trim() is "" ? 0 : Convert.ToInt32(dr["IdEmpleado"]);
-                            }
-                            else 
-                            {
-                                MessageBox.Show("No se logró Importar Ningún Dato del Usuario", "ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                                Application.Exit();
-                            }
-
-                            // Cargar Id TEAM CRM
-                            var obj2 = new RN_Team_New();
-                            var dato2 = new DataTable();
-
-                            dato2 = obj2.RN_Mostrar_Team_New_CRM(Cls_Libreria.DNI);
-                            if (dato2.Rows.Count > 0)
-                            {
-                                for (int i = 0; i < dato2.Rows.Count; i++)
-                                {
-                                    if (dato2.Rows[i]["Documento"].ToString().Trim() == Cls_Libreria.DNI)
-                                    {
-                                        Cls_Libreria.IdTeam = Convert.ToInt32(dato2.Rows[i]["Id"]);
-                                    }
-                                    else 
-                                    {
-                                        Cls_Libreria.IdTeam = 0;
-                                    }
-                                }
-                            }
-
-                            //Login
-                            //var user = new Models.User().Login(usu, pass);
-                            //Frm_Principal pri = new Frm_Principal();
-                            var mainForm = new MainForm();
-
-                            mainForm.Show();
-                            this.Hide();
-                            //Volver a mostrar el formulario de inicio de sesión y borrar los campos si el formulario principal es cerrado.
-                            try
-                            {
-                                mainForm.FormClosed += new FormClosedEventHandler(MainForm_Logout);
-                            }
-                            catch (Exception ex)
-                            {
-                                MessageBox.Show("Ocurrió algo al Cerrar la aplicación: " + ex, "ERROR AL CERRAR CESIÓN", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                            }
-                        }
-                        else
-                        {
-                            veces += 1;
-                            if (veces == 3)
-                            {
-                                MessageBox.Show("Ud ha Sobrepasado los Limites permitidos de Intentos", "Advertencia de LOgin", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                                Application.Exit();
-                            }
-                            else
-                            {
-                                //lblMessage.Text = "";
-                                txt_pass.Text = "";
-                                txt_usu.Text = "";
-                                txt_usu.Focus();
-                                MessageBox.Show("el Usuario y clave son Incorrectos O ESTÁ EN ESTADO DESACTIVO, Intentalo nuevamente", "Advertencia de LOgin", MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                                lblMessage.Text = "*Nombre de usuario o contraseña incorrecta \n                 va: " + veces + " Intento(s)";
-                                lblMessage.Visible = true;
-                                txt_pass.PasswordChar = true;
-                                txt_pass.PlaceHolderText = "Contraseña";
-                            }
-                        }
-                    }
-                    else
-                    {
-                        MessageBox.Show($"Está intentando acceder a un sitio PRIVADO y SEGURO, se tomará evidencia de su serie de PC {Cls_Libreria.SeriePC} Y MAC {serialMAC} para la respectiva denuncia", "USTED ESTÁ EN PROBLEMAS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    }
-                }
-                else 
-                {
-                    RJMessageBox.Show($"Debe Actualizar una Versión superior de su programa comuníquese con su Área de TI","ALERTA", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(""+ex);
-            }
-        }
-
-        private void Logout()
-        {//Metodo para cuando se cierra sesion desde el formulario principal.
-            try
-            {
-                txt_pass.Clear();
-                txt_usu.Clear();
-                lblMessage.Visible = false;
-                lblCaption.Select();
-                txt_pass.PasswordChar = true;
-                txt_pass.PlaceHolderText = "Contraseña";
-                Cls_Libreria.Foto = null;
-                this.Show();//Volver a mostrar el formulario de inicio de sesión.
-
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(""+ex,"Aviso de Cerrar Ventana Principal", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        
-        internal void botonesAccesoRedes(string Red)
-        {
-            try
-            {
-                var emp = new RN_empresa();
-                var dt = emp.RN_Cargar_Datos_Empresa();
-                if ((dt is null ? 0 : dt.Rows.Count) > 0)
-                    Process.Start(dt.Rows[0][$"{Red}"].ToString().Trim());
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-        }
-
-        private void registrosInicialesSede()
-        {
-            try
-            {
-                var emp = new RN_empresa();
-                cargarNomEmpresa();
-                if (emp.RN_Login_registros_inicial_Sede() == true)
-                {
-                    cargarNomSede();
-
-                    cmb_empresaLogin.Focus();
-                    ObtenerSerialPC();
-                    ArrayList direccion = obtenerDireccionMac();
-                    if (direccion.Count > 0) 
-                    {
-                        Cls_Libreria.SerialMAC = direccion[0].ToString();
-                        if(direccion.Count > 3)
-                            Cls_Libreria.SerialMAC_WiFi = direccion[3].ToString();
-                    }                    
-                    
-                }
-                else { RJMessageBox.Show("Sede No existe", "AVISO", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("" + ex);
-            }
-        }
-
-        public static void ObtenerSerialPC()
-        {
-            string serial = null;
-
-            // 1) Intento con Win32_PhysicalMedia
-            try
-            {
-                using (var mo = new ManagementObject(@"Win32_PhysicalMedia='\\.\PHYSICALDRIVE0'"))
-                {
-                    serial = mo.Properties["SerialNumber"]?.Value as string;
-                    if (!string.IsNullOrWhiteSpace(serial))
-                    {
-                        Cls_Libreria.SeriePC = serial.Trim();
-                        return;
-                    }
-                }
-            }
-            catch
-            {
-                // Ignoro y paso al siguiente intento
-            }
-
-            // 2) Intento con Win32_BIOS
-            try
-            {
-                var biosQuery = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_BIOS");
-                foreach (ManagementObject mo in biosQuery.Get())
-                {
-                    serial = mo["SerialNumber"] as string;
-                    if (!string.IsNullOrWhiteSpace(serial))
-                    {
-                        Cls_Libreria.SeriePC = serial.Trim();
-                        return;
-                    }
-                }
-            }
-            catch
-            {
-                // Ignoro y usaré fallback
-            }
-
-            // 3) Fallback: nombre de la máquina
-            Cls_Libreria.SeriePC = Environment.MachineName;
-        }
-
-
-        //Método que retorna el código MAC
-        public static ArrayList obtenerDireccionMac()
-        {
-            //Colecciones
-            ArrayList direccionesMac = new ArrayList();
-            //Objeto para el adaptador de red de la pc
-            NetworkInterface[] adaptadordeRed = null;
-            //obtener la cantidad de adaptadores de red de la pc
-            adaptadordeRed = NetworkInterface.GetAllNetworkInterfaces();
-
-            //validar que tenemos un adaptador de red eb la pc
-            if (adaptadordeRed != null && adaptadordeRed.Length > 0)
-            {
-                //recorrer los adaptadores de red que tengamos
-                foreach (NetworkInterface interfaces in adaptadordeRed)
-                {
-                    //obtener dirección física de la mac
-                    var direccion = interfaces.GetPhysicalAddress();
-                    byte[] bytes = direccion.GetAddressBytes();
-
-                    //declarar variable para almacenar la dirección MAC
-                    string mac = string.Empty;
-                    for (int i = 0; i < bytes.Length; i++)
-                    {
-                        mac = mac + bytes[i].ToString("x2").ToUpper();
-                        //crear un espacio cada dos pares de caracteres
-                        if (i != bytes.Length - 1)
-                        {
-                            mac = mac + "-";
-                        }
-                    }
-                    direccionesMac.Add(mac);
-                }
-            }
-            return direccionesMac;
-
-        }
-
-
-        private void cargarCodSerieDocSunat()
-        {
-            string codsede = cmb_nomSede.SelectedValue.ToString();
-            string CodSerieDocSunat = RN_Sedes.RN_Mostrar_CodSerieDocSunat(codsede);
-            CrearCodSerieDocSunat = CodSerieDocSunat;
-        }
-
-        private static string _path = Application.StartupPath + @"\connections.json";
-        internal static void SerializeJsonFile(List<EN_StringConnect> stringConnection)
-        {
-            string stringConnectionJson =  JsonConvert.SerializeObject(stringConnection.ToArray(), Formatting.Indented);
-            File.WriteAllText(_path, stringConnectionJson);
-        }
-
-        internal static List<EN_StringConnect> GetConnect(string stringConnect) 
-        {
-            List<EN_StringConnect> list = new List<EN_StringConnect>
-            {
-                new EN_StringConnect
-                {
-                    Default = true,
-                    type = "SQL Server",
-                    connection_string = $"{stringConnect}",
-                    name = "SQL Server Connection"
-                }
-            };
-            return list;
-        }
-
-        private void validarRUC(string RucDigitado)
-        {
-            this.Tag = "";
-
-            foreach (var item in EmpDatosIni) 
-            {
-                if (RucDigitado == item.Ruc)
-                {
-                    if (this.Rb_Claro.Checked is true)
-                    {
-                        BDConexion.nombreEmpresaruta = item.RutaConex;
-                        BDConexion.MHDI= "MHDI_FE";
-                        BDConexion.CLIENTES_DNI= "CLIENTES_DNI_FE";
-                        BDConexion.DATOS_CLIENTES= "DATOS_CLIENTES_FE";
-                        BDConexion.MAESTROS= "MAESTROS_FE";
-                        BDConexion.FRAMATEC= "Framatec_FE";
-                    }
-                    else if (this.Rb_Win.Checked is true) 
-                    {
-                        BDConexion.nombreEmpresaruta = item.RutaConex2;
-                        BDConexion.MHDI = "MHDI_FE2";
-                        BDConexion.CLIENTES_DNI = "CLIENTES_DNI_FE2";
-                        BDConexion.DATOS_CLIENTES = "DATOS_CLIENTES_FE2";
-                        BDConexion.MAESTROS = "MAESTROS_FE2";
-                        BDConexion.FRAMATEC = "Framatec_FE2";
-                    }
-                    CONEXIONMAESTRA.dataBase = "";//BDSISTEMA
-                    registrosInicialesSede();
-                    pnl_validaempresa.Visible = false;
-                    pnl_validaEmpresa2.Visible = false;
-                    Cls_Libreria.Ruc = item.Ruc;
-                    txt_usu.Focus();
-                    lblTitle.Text = item.NombreSIG;
-                    var Listtext = GetConnect(BDConexion.Conectar2());
-                    SerializeJsonFile(Listtext);
-                    this.Tag = "SI";
-                }
-            }
-
-        }
-        #endregion
-
-        #region -> Anulaciones
-
-        protected override void CloseWindow()
-        {//Anular el metodo (Para quitar el cuadro de mensaje si se desea salir de la app ) y simplemente salir de aplicación, Esto es opcional.
-            Application.Exit();//Salir de aplicacíon.
-        }
-        #endregion
-
-        private void txt_RucEmpreaa_KeyPress(object sender, KeyPressEventArgs e)
-        {
-            var ui = new Utilitario();
-            e.KeyChar = Convert.ToChar(ui.Solo_Numeros(e.KeyChar));
-        }
     }
 }
