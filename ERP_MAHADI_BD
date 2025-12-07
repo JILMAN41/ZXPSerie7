@@ -358,22 +358,40 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Users' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[Users](
-        [UserId]            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Users PRIMARY KEY,
-        [UserGuid]          UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
-        [Username]          VARCHAR(50)  NOT NULL UNIQUE,
-        [Email]             VARCHAR(100) NOT NULL UNIQUE,
-        [PasswordHash]      VARBINARY(256) NOT NULL,
-        [PasswordSalt]      VARBINARY(128) NOT NULL,
-        [FirstName]         NVARCHAR(50) NOT NULL,
-        [LastName]          NVARCHAR(50) NOT NULL,
-        [IsActive]          BIT NOT NULL DEFAULT 1,
-        [IsSystem]          BIT NOT NULL DEFAULT 0,
-        [MustChangePassword] BIT NOT NULL DEFAULT 0,
-        [LastLogin]         DATETIME2(0) NULL,
-        [FailedAttempts]    INT NOT NULL DEFAULT 0,
-        [LockedUntil]       DATETIME2(0) NULL,
-        [CreatedOn]         DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
-        [ModifiedOn]        DATETIME2(0) NULL
+        [UserId]                INT IDENTITY(1,1) PRIMARY KEY,
+        [UserGuid]              UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+        [Username]              VARCHAR(50) NOT NULL UNIQUE,
+        [Email]                 VARCHAR(100) NOT NULL UNIQUE,
+        [FirstName]             NVARCHAR(50) NOT NULL,
+        [LastName]              NVARCHAR(50) NOT NULL,
+        
+        -- Autenticación segura
+        [PasswordHash]          VARBINARY(256) NOT NULL,
+        [PasswordSalt]          VARBINARY(128) NOT NULL,
+        
+        -- Estado y bloqueos
+        [StatusCode]            CHAR(1) NOT NULL DEFAULT 'A', -- A=Activo, I=Inactivo, B=Bloqueado
+        [IsSystem]              BIT NOT NULL DEFAULT 0,
+        [MustChangePassword]    BIT NOT NULL DEFAULT 0,
+        [LastLogin]             DATETIME2(7) NULL,
+        [FailedAttempts]        INT NOT NULL DEFAULT 0,
+        [LockedUntil]           DATETIME2(7) NULL,
+        
+        -- Contexto de negocio
+        [CompanyCode]           CHAR(4) NULL,
+        [EmployeeId]            INT NULL,
+        
+        -- Migración legada
+        [LegacyUserCode]        CHAR(20) NULL,
+        [LegacyLevelCode]       CHAR(2) NULL,
+        [LegacyContactId]       INT NULL,
+        
+        -- Auditoría completa
+        [CreatedOn]             DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]             VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+        [ModifiedOn]            DATETIME2 NULL,
+        [ModifiedBy]            VARCHAR(50) NULL,
+        [Version]               ROWVERSION NOT NULL
     )ON [PRIMARY];
     PRINT '>> Tabla [security].[Users] creada.';
 END
@@ -385,12 +403,17 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'Roles' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[Roles](
-        [RoleId]     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Roles PRIMARY KEY,
-        [RoleCode]   VARCHAR(50)   NOT NULL UNIQUE,
-        [RoleName]   NVARCHAR(100) NOT NULL,
-        [Description] NVARCHAR(500) NULL,
-        [IsSystem]   BIT NOT NULL DEFAULT 0
+    [RoleId]            INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    [RoleCode]          VARCHAR(50) NOT NULL,
+    [RoleName]          NVARCHAR(100) NOT NULL,
+    [Description]       NVARCHAR(500) NULL,
+    [IsSystem]          BIT NOT NULL DEFAULT 0,
+    [IsActive]          BIT NOT NULL DEFAULT 1,
+    [LegacyLevelCode]   CHAR(2) NULL,
+    [CreatedOn]         DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+    [ModifiedOn]        DATETIME2(0) NULL
     )ON [PRIMARY];
+CREATE UNIQUE INDEX UX_Roles_RoleCode ON [security].[Roles]([RoleCode]);
     PRINT '>> Tabla [security].[Roles] creada.';
 END
 ELSE
@@ -401,18 +424,299 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'UserRoles' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[UserRoles](
-        [UserId]     INT NOT NULL,
-        [RoleId]     INT NOT NULL,
-        [AssignedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
-        [AssignedBy] INT NULL,
+        [UserId]                INT NOT NULL,
+        [RoleId]                INT NOT NULL,
+        [ScopeCompanyCode]      CHAR(4) NULL,
+        [ScopeEstablishmentId]  INT NULL,
+        [AssignedOn]            DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [AssignedBy]            INT NULL,
         CONSTRAINT PK_UserRoles PRIMARY KEY ([UserId], [RoleId]),
-        CONSTRAINT FK_UserRoles_Users FOREIGN KEY ([UserId]) REFERENCES [security].[Users]([UserId]),
-        CONSTRAINT FK_UserRoles_Roles FOREIGN KEY ([RoleId]) REFERENCES [security].[Roles]([RoleId])
+        CONSTRAINT FK_UserRoles_Users FOREIGN KEY ([UserId])
+            REFERENCES [security].[Users]([UserId]) ON DELETE CASCADE,
+        CONSTRAINT FK_UserRoles_Roles FOREIGN KEY ([RoleId])
+            REFERENCES [security].[Roles]([RoleId]) ON DELETE CASCADE
     ) ON [PRIMARY];
     PRINT '>> Tabla [security].[UserRoles] creada.';
 END
 ELSE
     PRINT '>> Tabla [security].[UserRoles] ya existe.';
+GO
+
+
+-- 5.4 CLIENT DEVICES (Reemplaza M_Series_y_Macs_Autorizadas)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'ClientDevices' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[ClientDevices](
+        [DeviceId]          INT IDENTITY(1,1) PRIMARY KEY,
+        [DeviceGuid]        UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+        [SerialPC]          NVARCHAR(50) NOT NULL,
+        [MacEthernet]       NVARCHAR(50) NULL,
+        [MacWifi]           NVARCHAR(50) NULL,
+        [UserId]            INT NULL,
+        [StatusAccess]      CHAR(1) NOT NULL DEFAULT 'N', -- S=Autorizado, N=No autorizado
+        [StatusText]        VARCHAR(50) NOT NULL DEFAULT 'Por Aprobar',
+        [CreatedOn]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]         VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+        [ApprovedOn]        DATETIME2 NULL,
+        [ApprovedBy]        INT NULL,
+        [Notes]             NVARCHAR(500) NULL,
+        [Version]           ROWVERSION NOT NULL
+    );
+
+    CREATE INDEX IX_ClientDevices_SerialPC ON [security].[ClientDevices]([SerialPC]);
+    CREATE INDEX IX_ClientDevices_Status ON [security].[ClientDevices]([StatusAccess]);
+
+    ALTER TABLE [security].[ClientDevices]
+    ADD CONSTRAINT FK_ClientDevices_Users
+        FOREIGN KEY ([UserId])
+        REFERENCES [security].[Users]([UserId]);
+
+    PRINT '>> Tabla [security].[ClientDevices] creada (reemplaza M_Series_y_Macs_Autorizadas).';
+END
+GO
+
+-- 5.5 CORPORATE DEVICES (Equivalente a Asigna_Maquina)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'CorporateDevices' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[CorporateDevices](
+        [CorporateDeviceId] INT IDENTITY(1,1) PRIMARY KEY,
+        [DeviceCategory]    VARCHAR(50) NULL,
+        [Brand]             VARCHAR(100) NULL,
+        [Model]             VARCHAR(100) NULL,
+        [DeviceName]        VARCHAR(100) NULL,
+        [SerialPC]          VARCHAR(100) NOT NULL,
+        [MacEthernet]       VARCHAR(50) NULL,
+        [MacWifi]           VARCHAR(50) NULL,
+        [CompanyCode]       CHAR(4) NULL,
+        [EstablishmentId]   INT NULL,
+        [AssignedUserId]    INT NULL,
+        [LicenseEmail]      VARCHAR(150) NULL,
+        [Status]            CHAR(1) NOT NULL DEFAULT 'A',
+        [CreatedOn]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]         VARCHAR(50) NOT NULL,
+        [ModifiedOn]        DATETIME2 NULL,
+        [ModifiedBy]        VARCHAR(50) NULL
+    );
+
+    CREATE UNIQUE INDEX UX_CorporateDevices_Serial ON [security].[CorporateDevices]([SerialPC]);
+    CREATE INDEX IX_CorporateDevices_User ON [security].[CorporateDevices]([AssignedUserId]);
+
+    ALTER TABLE [security].[CorporateDevices]
+    ADD CONSTRAINT FK_CorporateDevices_Users
+        FOREIGN KEY ([AssignedUserId])
+        REFERENCES [security].[Users]([UserId]);
+
+    PRINT '>> Tabla [security].[CorporateDevices] creada (equivalente a Asigna_Maquina).';
+END
+GO
+
+
+-- 5.6 USER SESSIONS (Gestión de sesiones)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'UserSessions' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[UserSessions](
+        [SessionId]             UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        [UserId]                INT NOT NULL,
+        [DeviceId]              INT NULL,
+        [LoginTimestamp]        DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [LastActivityTimestamp] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [ExpiryTimestamp]       DATETIME2 NOT NULL,
+        [IPAddress]             NVARCHAR(45) NULL,
+        [UserAgent]             NVARCHAR(500) NULL,
+        [Status]                VARCHAR(20) NOT NULL DEFAULT 'Active',
+        [LogoutTimestamp]       DATETIME2 NULL
+    );
+
+    CREATE INDEX IX_UserSessions_UserId ON [security].[UserSessions]([UserId]);
+    CREATE INDEX IX_UserSessions_Status ON [security].[UserSessions]([Status]);
+
+    ALTER TABLE [security].[UserSessions]
+    ADD CONSTRAINT FK_UserSessions_Users
+        FOREIGN KEY ([UserId])
+        REFERENCES [security].[Users]([UserId]);
+
+    ALTER TABLE [security].[UserSessions]
+    ADD CONSTRAINT FK_UserSessions_ClientDevices
+        FOREIGN KEY ([DeviceId])
+        REFERENCES [security].[ClientDevices]([DeviceId]);
+
+    PRINT '>> Tabla [security].[UserSessions] creada.';
+END
+GO
+
+-- 5.7 USER SESSIONS GEO (Reemplaza IniciosdeSesion)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'UserSessionsGeo' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[UserSessionsGeo](
+        [SessionGeoId]      INT IDENTITY(1,1) PRIMARY KEY,
+        [SessionId]         UNIQUEIDENTIFIER NULL,
+        [LegacySessionId]   INT NULL,
+        [Sede]              CHAR(3) NULL,
+        [SerialPC]          VARCHAR(50) NULL,
+        [IPAddress]         VARCHAR(50) NULL,
+        [CodBarrFtcheck]    CHAR(20) NULL,
+        [UserId]            INT NULL,
+        [Username]          VARCHAR(50) NULL,
+        [StartTimeLocal]    DATETIME2(3) NULL,
+        [StartTimeUTC]      DATETIME2(3) NOT NULL DEFAULT GETUTCDATE(),
+        [EndTimeLocal]      DATETIME2(3) NULL,
+        [EndTimeUTC]        DATETIME2(3) NULL,
+        [InitialLatitude]   DECIMAL(9, 6) NULL,
+        [InitialLongitude]  DECIMAL(9, 6) NULL,
+        [InitialAccuracy]   DECIMAL(9, 2) NULL,
+        [City]              VARCHAR(100) NULL,
+        [Region]            VARCHAR(100) NULL,
+        [Country]           VARCHAR(100) NULL,
+        [Location]          VARCHAR(100) NULL,
+        [Organization]      VARCHAR(100) NULL,
+        [PostalCode]        VARCHAR(100) NULL,
+        [Timezone]          VARCHAR(100) NULL,
+        [GeolocationSource] VARCHAR(20) NULL,
+        [AccuracyCategory]  VARCHAR(20) NULL,
+        [IsSuspicious]      BIT NOT NULL DEFAULT 0,
+        [CreatedOn]         DATETIME2(3) NOT NULL DEFAULT GETUTCDATE(),
+        [ModifiedOn]        DATETIME2(3) NULL,
+        [Version]           ROWVERSION NOT NULL
+    );
+
+    CREATE INDEX IX_UserSessionsGeo_User ON [security].[UserSessionsGeo]([UserId]);
+    CREATE INDEX IX_UserSessionsGeo_Session ON [security].[UserSessionsGeo]([SessionId]);
+    CREATE INDEX IX_UserSessionsGeo_Time ON [security].[UserSessionsGeo]([StartTimeUTC]);
+
+    ALTER TABLE [security].[UserSessionsGeo]
+    ADD CONSTRAINT FK_UserSessionsGeo_Users
+        FOREIGN KEY (UserId) REFERENCES [security].[Users]([UserId]);
+
+    PRINT '>> Tabla [security].[UserSessionsGeo] creada (reemplaza IniciosdeSesion).';
+END
+GO
+
+-- 5.8 USER SESSION GEO DETAILS (Reemplaza IniciosdeSesion_Det)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'UserSessionGeoDetails' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[UserSessionGeoDetails](
+        [GeoDetailId]       INT IDENTITY(1,1) PRIMARY KEY,
+        [SessionGeoId]      INT NOT NULL,
+        [Latitude]          DECIMAL(9, 6) NOT NULL,
+        [Longitude]         DECIMAL(9, 6) NOT NULL,
+        [Accuracy]          DECIMAL(9, 2) NULL,
+        [Altitude]          DECIMAL(9, 2) NULL,
+        [TrackingReason]    VARCHAR(50) NULL,
+        [DistanceFromPrev]  DECIMAL(9, 2) NULL,
+        [Speed]             DECIMAL(9, 2) NULL,
+        [GeolocationSource] VARCHAR(20) NULL,
+        [AccuracyCategory]  VARCHAR(20) NULL,
+        [IsSignificantMove] BIT NOT NULL DEFAULT 1,
+        [RecordedBy]        VARCHAR(50) NOT NULL,
+        [DeviceId]          INT NULL,
+        [RecordedAtLocal]   DATETIME2(3) NOT NULL,
+        [RecordedAtUTC]     DATETIME2(3) NOT NULL DEFAULT GETUTCDATE()
+    );
+
+    CREATE INDEX IX_UserSessionGeoDetails_Session ON [security].[UserSessionGeoDetails]([SessionGeoId]);
+    CREATE INDEX IX_UserSessionGeoDetails_Time ON [security].[UserSessionGeoDetails]([RecordedAtUTC]);
+
+    ALTER TABLE [security].[UserSessionGeoDetails]
+    ADD CONSTRAINT FK_UserSessionGeoDetails_SessionGeo
+        FOREIGN KEY (SessionGeoId)
+        REFERENCES [security].[UserSessionsGeo](SessionGeoId);
+
+    ALTER TABLE [security].[UserSessionGeoDetails]
+    ADD CONSTRAINT FK_UserSessionGeoDetails_Device
+        FOREIGN KEY (DeviceId)
+        REFERENCES [security].[ClientDevices](DeviceId);
+
+    PRINT '>> Tabla [security].[UserSessionGeoDetails] creada (reemplaza IniciosdeSesion_Det).';
+END
+GO
+
+-- 5.9 AUTHENTICATION LOGS (Auditoría de autenticación)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'AuthenticationLogs' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[AuthenticationLogs](
+        [LogId]             BIGINT IDENTITY(1,1) PRIMARY KEY,
+        [Timestamp]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [Username]          VARCHAR(50) NOT NULL,
+        [UserId]            INT NULL,
+        [EventType]         VARCHAR(50) NOT NULL,
+        [IPAddress]         NVARCHAR(45) NULL,
+        [UserAgent]         NVARCHAR(500) NULL,
+        [Details]           NVARCHAR(1000) NULL,
+        [DeviceId]          INT NULL
+    );
+
+    CREATE INDEX IX_AuthenticationLogs_UserId_Time ON [security].[AuthenticationLogs]([UserId], [Timestamp]);
+    CREATE INDEX IX_AuthenticationLogs_EventType ON [security].[AuthenticationLogs]([EventType]);
+
+    PRINT '>> Tabla [security].[AuthenticationLogs] creada.';
+END
+GO
+
+
+-- 5.10 PASSWORD POLICIES (Políticas enterprise)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'PasswordPolicies' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[PasswordPolicies](
+        [PolicyId]                  INT IDENTITY(1,1) PRIMARY KEY,
+        [CompanyCode]               CHAR(4) NULL,
+        [MinLength]                 INT NOT NULL DEFAULT 12,
+        [RequireUppercase]          BIT NOT NULL DEFAULT 1,
+        [RequireLowercase]          BIT NOT NULL DEFAULT 1,
+        [RequireDigit]              BIT NOT NULL DEFAULT 1,
+        [RequireSpecialChar]        BIT NOT NULL DEFAULT 1,
+        [MaxFailedAttempts]         INT NOT NULL DEFAULT 3,
+        [LockoutDurationMinutes]    INT NOT NULL DEFAULT 60,
+        [PasswordExpiryDays]        INT NOT NULL DEFAULT 45,
+        [CannotReuseLast]           INT NOT NULL DEFAULT 10,
+        [CreatedOn]                 DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+    );
+    PRINT '>> Tabla [security].[PasswordPolicies] creada.';
+END
+GO
+
+-- 5.11 PASSWORD HISTORY (Historial de contraseñas)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'PasswordHistory' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[PasswordHistory](
+        [Id]                BIGINT IDENTITY(1,1) PRIMARY KEY,
+        [UserId]            INT NOT NULL,
+        [PasswordHash]      VARBINARY(256) NOT NULL,
+        [PasswordSalt]      VARBINARY(128) NOT NULL,
+        [SetOn]             DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+    );
+
+    CREATE INDEX IX_PasswordHistory_UserId ON [security].[PasswordHistory]([UserId]);
+
+    ALTER TABLE [security].[PasswordHistory]
+    ADD CONSTRAINT FK_PasswordHistory_Users
+        FOREIGN KEY ([UserId])
+        REFERENCES [security].[Users]([UserId]);
+
+    PRINT '>> Tabla [security].[PasswordHistory] creada.';
+END
+GO
+
+-- 5.12 GEOLOCATION POLICIES (Políticas de geolocalización)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'GeolocationPolicies' AND schema_id = SCHEMA_ID(N'security'))
+BEGIN
+    CREATE TABLE [security].[GeolocationPolicies](
+        [PolicyId]                  INT IDENTITY(1,1) PRIMARY KEY,
+        [CompanyCode]               CHAR(4) NULL,
+        [PolicyName]                VARCHAR(100) NOT NULL,
+        [TrackingInterval]          INT NOT NULL DEFAULT 10,
+        [MinMovementMeters]         INT NOT NULL DEFAULT 25,
+        [ExcellentMaxMeters]        INT NOT NULL DEFAULT 20,
+        [GoodMaxMeters]             INT NOT NULL DEFAULT 50,
+        [RegularMaxMeters]          INT NOT NULL DEFAULT 100,
+        [AllowIPFallback]           BIT NOT NULL DEFAULT 1,
+        [RequireGPSForSensitiveOps] BIT NOT NULL DEFAULT 0,
+        [MaxDistanceFromOffice]     DECIMAL(9,2) NULL,
+        [IsActive]                  BIT NOT NULL DEFAULT 1,
+        [CreatedOn]                 DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]                 VARCHAR(50) NOT NULL
+    );
+    PRINT '>> Tabla [security].[GeolocationPolicies] creada.';
+END
 GO
 
 ------------------------------------------------------------
@@ -1562,6 +1866,113 @@ BEGIN
     PRINT '>> Tabla [master].[ConnectionHealthMetrics] ya existe.';
 END;
 
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'PasswordHistory' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+	CREATE TABLE [security].[PasswordHistory]
+	(
+    [PasswordHistoryId] INT IDENTITY(1,1) PRIMARY KEY,
+    [UserId] INT NOT NULL,
+    [PasswordHash] NVARCHAR(500) NOT NULL, -- Hash anterior
+    [PasswordSalt] NVARCHAR(500) NULL,
+    [HashAlgorithm] VARCHAR(50) NOT NULL,
+    [HashVersion] INT NOT NULL,
+    [ChangedByUserId] INT NULL, -- NULL = self-service
+    [ChangeType] VARCHAR(20) NOT NULL, -- 'USER_CHANGE', 'ADMIN_RESET', 'SYSTEM_FORCED'
+    [ChangeReason] NVARCHAR(200) NULL, -- 'Rotación periódica', 'Password comprometido'
+    [ClientIP] VARCHAR(45) NULL,
+    [UserAgent] NVARCHAR(500) NULL,
+    [DeviceId] INT NULL, -- FK a CorporateDevices
+    [SetOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    
+    -- FK Constraints
+    CONSTRAINT [FK_PasswordHistory_Users] 
+        FOREIGN KEY ([UserId]) 
+        REFERENCES [security].[Users]([UserId]),
+        
+    CONSTRAINT [FK_PasswordHistory_ChangedBy] 
+        FOREIGN KEY ([ChangedByUserId]) 
+        REFERENCES [security].[Users]([UserId]),
+        
+    CONSTRAINT [FK_PasswordHistory_Devices] 
+        FOREIGN KEY ([DeviceId]) 
+        REFERENCES [security].[CorporateDevices]([DeviceId]),
+    
+    -- Índices
+    INDEX [IX_PasswordHistory_UserId] ([UserId]),
+    INDEX [IX_PasswordHistory_ChangedOn] ([SetOn])
+	);
+    PRINT '>> Tabla [master].[PasswordHistory] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[PasswordHistory] ya existe.';
+END;
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'PasswordPolicy' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+CREATE TABLE [security].[PasswordPolicy]
+(
+    [PolicyId] INT IDENTITY(1,1) PRIMARY KEY,
+    [PolicyName] NVARCHAR(100) NOT NULL,
+    [MinLength] INT NOT NULL DEFAULT 12,
+    [RequireUppercase] BIT NOT NULL DEFAULT 1,
+    [RequireLowercase] BIT NOT NULL DEFAULT 1,
+    [RequireNumbers] BIT NOT NULL DEFAULT 1,
+    [RequireSymbols] BIT NOT NULL DEFAULT 1,
+    [MaxAgeDays] INT NOT NULL DEFAULT 90, -- Rotación cada 90 días
+    [HistorySize] INT NOT NULL DEFAULT 5, -- No reusar últimos 5 passwords
+    [LockoutAttempts] INT NOT NULL DEFAULT 5,
+    [LockoutMinutes] INT NOT NULL DEFAULT 15,
+    [AllowCommonPasswords] BIT NOT NULL DEFAULT 0,
+    [ComplexityRegex] NVARCHAR(200) NULL,
+    [IsActive] BIT NOT NULL DEFAULT 1,
+    [AppliesTo] VARCHAR(20) NOT NULL DEFAULT 'ALL_USERS', -- 'ALL_USERS', 'ADMINS_ONLY', 'BY_ROLE'
+    [RoleId] INT NULL,
+    
+    CONSTRAINT [FK_PasswordPolicy_Roles] 
+        FOREIGN KEY ([RoleId]) 
+        REFERENCES [security].[Roles]([RoleId])
+);
+    PRINT '>> Tabla [master].[PasswordPolicy] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[PasswordPolicy] ya existe.';
+END;
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'CompanyPasswordPolicy' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+	-- Tabla para aplicar políticas por compañía/grupo
+	CREATE TABLE [security].[CompanyPasswordPolicy]
+	(
+		[CompanyCodeId] INT NOT NULL,
+		[PolicyId] INT NOT NULL,
+		[EffectiveDate] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+    
+		CONSTRAINT [PK_CompanyPasswordPolicy] 
+			PRIMARY KEY ([CompanyCodeId], [PolicyId]),
+        
+		CONSTRAINT [FK_CompanyPasswordPolicy_CompanyCodes] 
+			FOREIGN KEY ([CompanyCodeId]) 
+			REFERENCES [master].[CompanyCodes]([CompanyCodeId]),
+        
+		CONSTRAINT [FK_CompanyPasswordPolicy_Policy] 
+			FOREIGN KEY ([PolicyId]) 
+			REFERENCES [security].[PasswordPolicy]([PolicyId])
+	);
+    PRINT '>> Tabla [master].[CompanyPasswordPolicy] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[CompanyPasswordPolicy] ya existe.';
+END;
+GO
+
+
+
 -- =============================================
 -- VISTA: vw_CompanyActiveConnections
 -- Vista para obtener conexiones activas ordenadas por prioridad
@@ -1613,5 +2024,7 @@ PRINT ' 3) Configurar backups / jobs de mantenimiento';
 PRINT ' 4) Conectar .NET 8 usando el login de aplicación';
 PRINT '=============================================';
 GO
+
+
 
 
