@@ -429,7 +429,7 @@ BEGIN
         [ScopeCompanyCode]      CHAR(4) NULL,
         [ScopeEstablishmentId]  INT NULL,
         [AssignedOn]            DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
-        [AssignedBy]            INT NULL,
+        [AssignedBy]            VARCHAR (50),
         CONSTRAINT PK_UserRoles PRIMARY KEY ([UserId], [RoleId]),
         CONSTRAINT FK_UserRoles_Users FOREIGN KEY ([UserId])
             REFERENCES [security].[Users]([UserId]) ON DELETE CASCADE,
