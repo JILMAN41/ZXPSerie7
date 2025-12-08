@@ -1,0 +1,1289 @@
+using ERP.Mahadi.Application.Common.Interfaces;
+using ERP.Mahadi.Application.Common.Models;
+using ERP.Mahadi.Application.Features.Audit.DTOs;
+using ERP.Mahadi.Application.Features.Audit.Interfaces;
+using ERP.Mahadi.Application.Features.Security.DTOs;
+using ERP.Mahadi.Application.Features.Security.Interfaces;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reactive.Subjects;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ERP.Mahadi.Infrastructure.Services.Security.Services
+{
+
+    public class RealTimeMonitoringService : IRealTimeMonitoringService, IHostedService
+    {
+        private readonly ILogger<RealTimeMonitoringService> _logger;
+        private readonly IOptions<MonitoringConfiguration> _config;
+        private readonly IUserSessionService _userSessionService;
+        private readonly ISessionMonitorService _sessionMonitorService;
+        private readonly IAuditLoggerService _auditLogger;
+        private readonly ISecurityAlertService _securityAlertService;
+        private readonly IUnitOfWork _unitOfWork;
+
+        // Event buses (Reactive Extensions)
+        private readonly Subject<SecurityEventLog> _securityEventBus = new();
+        private readonly Subject<AuditEvent> _auditEventBus = new();
+        private readonly Subject<PerformanceEvent> _performanceEventBus = new();
+        private readonly Subject<BusinessEventLog> _businessEventBus = new();
+        private readonly Subject<SystemEvent> _systemEventBus = new();
+        private readonly Subject<RealtimeAlert> _alertBus = new();
+
+        // Buffers for real-time data
+        private readonly ConcurrentQueue<SecurityEventLog> _securityEventBuffer = new();
+        private readonly ConcurrentQueue<PerformanceEvent> _performanceEventBuffer = new();
+        private readonly ConcurrentQueue<RealtimeAlert> _alertBuffer = new();
+        private readonly ConcurrentDictionary<string, ActiveSession> _activeSessions = new();
+        private readonly ConcurrentDictionary<string, ServiceMetrics> _serviceMetrics = new();
+
+        // Subscriptions management
+        private readonly ConcurrentDictionary<string, (IDisposable Subscription, EventSubscription Info)>
+            _subscriptions = new();
+
+        // Metrics tracking
+        private readonly ConcurrentDictionary<string, long> _eventCounters = new();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<DateTime>> _eventTimestamps = new();
+        private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _responseTimes = new();
+
+        // Health monitoring
+        private DateTime _lastHealthCheck = DateTime.UtcNow;
+        private SystemHealth _currentHealth = new();
+        private readonly List<ServiceStatus> _serviceStatuses = new();
+
+        // Background tasks
+        private Timer _metricsCollectorTimer;
+        private Timer _healthCheckTimer;
+        private Timer _bufferCleanupTimer;
+        private Timer _alertProcessorTimer;
+
+        private bool _isDisposed = false;
+        private bool _isRunning = false;
+        private readonly object _lock = new object();
+
+        public RealTimeMonitoringService(
+            ILogger<RealTimeMonitoringService> logger,
+            IOptions<MonitoringConfiguration> config,
+            IUserSessionService userSessionService,
+            ISessionMonitorService sessionMonitorService,
+            IAuditLoggerService auditLogger,
+            ISecurityAlertService securityAlertService,
+            IUnitOfWork unitOfWork)
+        {
+            _logger = logger;
+            _config = config;
+            _userSessionService = userSessionService;
+            _sessionMonitorService = sessionMonitorService;
+            _auditLogger = auditLogger;
+            _securityAlertService = securityAlertService;
+            _unitOfWork = unitOfWork;
+        }
+
+        // ========== IHostedService Implementation ==========
+
+        public async Task StartAsync(CancellationToken cancellationToken)
+        {
+            if (_isRunning) return;
+
+            _logger.LogInformation("Iniciando RealTimeMonitoringService...");
+
+            lock (_lock)
+            {
+                if (_isRunning) return;
+
+                try
+                {
+                    // Inicializar buffers
+                    InitializeBuffers();
+
+                    // Configurar event subscriptions internas
+                    SetupInternalSubscriptions();
+
+                    // Iniciar timers
+                    StartTimers();
+
+                    _isRunning = true;
+
+                    _logger.LogInformation("RealTimeMonitoringService iniciado exitosamente");
+
+                    // Publicar evento de sistema
+                    PublishSystemEventAsync(new SystemEvent
+                    {
+                        EventType = "SERVICE_START",
+                        Component = "RealTimeMonitoringService",
+                        Message = "Servicio de monitoreo en tiempo real iniciado",
+                        Severity = "INFO"
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error iniciando RealTimeMonitoringService");
+                    throw;
+                }
+            }
+        }
+
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            if (!_isRunning) return;
+
+            _logger.LogInformation("Deteniendo RealTimeMonitoringService...");
+
+            lock (_lock)
+            {
+                if (!_isRunning) return;
+
+                try
+                {
+                    // Detener timers
+                    StopTimers();
+
+                    // Limpiar subscriptions
+                    ClearAllSubscriptions();
+
+                    // Liberar recursos
+                    _securityEventBus.Dispose();
+                    _auditEventBus.Dispose();
+                    _performanceEventBus.Dispose();
+                    _businessEventBus.Dispose();
+                    _systemEventBus.Dispose();
+                    _alertBus.Dispose();
+
+                    _isRunning = false;
+
+                    _logger.LogInformation("RealTimeMonitoringService detenido exitosamente");
+
+                    // Publicar evento de sistema
+                    PublishSystemEventAsync(new SystemEvent
+                    {
+                        EventType = "SERVICE_STOP",
+                        Component = "RealTimeMonitoringService",
+                        Message = "Servicio de monitoreo en tiempo real detenido",
+                        Severity = "INFO"
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error deteniendo RealTimeMonitoringService");
+                }
+            }
+        }
+
+        // ========== Event Publishing Methods ==========
+
+        public async Task PublishSecurityEventAsync(SecurityEventLog securityEvent)
+        {
+            if (!_config.Value.EnableSecurityMonitoring || !_isRunning)
+                return;
+
+            try
+            {
+                // Validar y enriquecer evento
+                EnrichSecurityEvent(securityEvent);
+
+                // Throttling check
+                if (!CanPublishEvent("security", securityEvent.EventType))
+                {
+                    _logger.LogWarning("Throttling activado para eventos de seguridad. Evento descartado: {EventType}",
+                        securityEvent.EventType);
+                    return;
+                }
+
+                // Publicar en el bus
+                _securityEventBus.OnNext(securityEvent);
+
+                // Agregar al buffer para real-time dashboard
+                AddToSecurityEventBuffer(securityEvent);
+
+                // Actualizar métricas
+                UpdateEventMetrics("security", securityEvent.EventType);
+
+                // Log para debugging
+                _logger.LogDebug("Evento de seguridad publicado: {EventType} - {Severity}",
+                    securityEvent.EventType, securityEvent.Severity);
+
+                // Verificar si genera alerta
+                await CheckForSecurityAlertAsync(securityEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento de seguridad: {EventType}",
+                    securityEvent.EventType);
+            }
+        }
+
+        public async Task PublishAuditEventAsync(AuditEvent auditEvent)
+        {
+            if (!_isRunning) return;
+
+            try
+            {
+                _auditEventBus.OnNext(auditEvent);
+
+                // También loggear en sistema de auditoría principal
+                await _auditLogger.LogDataChangeAsync(new DataChangeLog
+                {
+                    EntityType = auditEvent.EntityType,
+                    EntityId = auditEvent.EntityId,
+                    Operation = auditEvent.Action,
+                    ChangedBy = auditEvent.ChangedBy,
+                    ChangedOn = auditEvent.Timestamp,
+                    OldValues = JsonConvert.SerializeObject(auditEvent.OldValues),
+                    NewValues = JsonConvert.SerializeObject(auditEvent.NewValues),
+                    IpAddress = auditEvent.IpAddress,
+                    UserAgent = auditEvent.UserAgent
+                });
+
+                _logger.LogDebug("Evento de auditoría publicado: {Action} en {EntityType}/{EntityId}",
+                    auditEvent.Action, auditEvent.EntityType, auditEvent.EntityId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento de auditoría");
+            }
+        }
+
+        public async Task PublishPerformanceEventAsync(PerformanceEvent performanceEvent)
+        {
+            if (!_config.Value.EnablePerformanceMonitoring || !_isRunning)
+                return;
+
+            try
+            {
+                _performanceEventBus.OnNext(performanceEvent);
+
+                // Agregar al buffer
+                AddToPerformanceEventBuffer(performanceEvent);
+
+                // Actualizar métricas de servicio
+                UpdateServiceMetrics(performanceEvent);
+
+                // Verificar thresholds de performance
+                await CheckPerformanceThresholdsAsync(performanceEvent);
+
+                _logger.LogDebug("Evento de performance publicado: {Operation} - {DurationMs}ms",
+                    performanceEvent.Operation, performanceEvent.DurationMs);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento de performance");
+            }
+        }
+
+        public async Task PublishBusinessEventAsync(BusinessEvent businessEvent)
+        {
+            if (!_config.Value.EnableBusinessEventMonitoring || !_isRunning)
+                return;
+
+            try
+            {
+                _businessEventBus.OnNext(businessEvent);
+
+                _logger.LogDebug("Evento de negocio publicado: {EventType}",
+                    businessEvent.EventType);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento de negocio");
+            }
+        }
+
+        public async Task PublishSystemEventAsync(SystemEvent systemEvent)
+        {
+            if (!_config.Value.EnableSystemHealthMonitoring || !_isRunning)
+                return;
+
+            try
+            {
+                _systemEventBus.OnNext(systemEvent);
+
+                _logger.LogDebug("Evento de sistema publicado: {EventType} - {Message}",
+                    systemEvent.EventType, systemEvent.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento de sistema");
+            }
+        }
+
+        public async Task PublishCustomEventAsync(string eventType, Dictionary<string, object> data, string source = null)
+        {
+            if (!_isRunning) return;
+
+            try
+            {
+                var customEvent = new SecurityEventLog
+                {
+                    EventType = eventType,
+                    Source = source ?? "CUSTOM",
+                    Severity = "INFO",
+                    Category = "CUSTOM",
+                    Data = data,
+                    Timestamp = DateTime.UtcNow
+                };
+
+                await PublishSecurityEventAsync(customEvent);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error publicando evento personalizado: {EventType}", eventType);
+            }
+        }
+
+        // ========== Event Subscription Methods ==========
+
+        public async Task<string> SubscribeToSecurityEventsAsync(Func<SecurityEventLog, Task> handler, string filter = null)
+        {
+            var subscriptionId = Guid.NewGuid().ToString();
+
+            IDisposable subscription = filter == null
+                ? _securityEventBus.Subscribe(async ev => await handler(ev))
+                : _securityEventBus
+                    .Where(ev => MatchesFilter(ev, filter))
+                    .Subscribe(async ev => await handler(ev));
+
+            var subscriptionInfo = new EventSubscription
+            {
+                SubscriptionId = subscriptionId,
+                EventType = "SECURITY",
+                Filter = filter ?? "ALL",
+                SubscribedAt = DateTime.UtcNow,
+                SubscriberInfo = GetSubscriberInfo()
+            };
+
+            _subscriptions[subscriptionId] = (subscription, subscriptionInfo);
+
+            _logger.LogInformation("Nueva suscripción a eventos de seguridad: {SubscriptionId}", subscriptionId);
+
+            return subscriptionId;
+        }
+
+        public async Task<string> SubscribeToAuditEventsAsync(Func<AuditEvent, Task> handler, string filter = null)
+        {
+            var subscriptionId = Guid.NewGuid().ToString();
+
+            IDisposable subscription = filter == null
+                ? _auditEventBus.Subscribe(async ev => await handler(ev))
+                : _auditEventBus
+                    .Where(ev => MatchesFilter(ev, filter))
+                    .Subscribe(async ev => await handler(ev));
+
+            var subscriptionInfo = new EventSubscription
+            {
+                SubscriptionId = subscriptionId,
+                EventType = "AUDIT",
+                Filter = filter ?? "ALL",
+                SubscribedAt = DateTime.UtcNow,
+                SubscriberInfo = GetSubscriberInfo()
+            };
+
+            _subscriptions[subscriptionId] = (subscription, subscriptionInfo);
+
+            return subscriptionId;
+        }
+
+        public async Task<string> SubscribeToPerformanceEventsAsync(Func<PerformanceEvent, Task> handler, string filter = null)
+        {
+            var subscriptionId = Guid.NewGuid().ToString();
+
+            IDisposable subscription = filter == null
+                ? _performanceEventBus.Subscribe(async ev => await handler(ev))
+                : _performanceEventBus
+                    .Where(ev => MatchesFilter(ev, filter))
+                    .Subscribe(async ev => await handler(ev));
+
+            var subscriptionInfo = new EventSubscription
+            {
+                SubscriptionId = subscriptionId,
+                EventType = "PERFORMANCE",
+                Filter = filter ?? "ALL",
+                SubscribedAt = DateTime.UtcNow,
+                SubscriberInfo = GetSubscriberInfo()
+            };
+
+            _subscriptions[subscriptionId] = (subscription, subscriptionInfo);
+
+            return subscriptionId;
+        }
+
+        public async Task<string> SubscribeToAllEventsAsync(Func<MonitoringEvent, Task> handler)
+        {
+            var subscriptionId = Guid.NewGuid().ToString();
+
+            // Combinar todos los eventos en un solo stream
+            var allEvents = Observable.Merge(
+                _securityEventBus.Select(ev => new MonitoringEvent
+                {
+                    EventId = ev.EventId,
+                    EventType = ev.EventType,
+                    Category = "SECURITY",
+                    Timestamp = ev.Timestamp,
+                    Data = ev.Data
+                }),
+                _auditEventBus.Select(ev => new MonitoringEvent
+                {
+                    EventId = ev.EventId,
+                    EventType = ev.Action,
+                    Category = "AUDIT",
+                    Timestamp = ev.Timestamp,
+                    Data = new Dictionary<string, object>
+                    {
+                        ["entityType"] = ev.EntityType,
+                        ["entityId"] = ev.EntityId,
+                        ["changedBy"] = ev.ChangedBy
+                    }
+                }),
+                _performanceEventBus.Select(ev => new MonitoringEvent
+                {
+                    EventId = ev.EventId,
+                    EventType = ev.Operation,
+                    Category = "PERFORMANCE",
+                    Timestamp = ev.StartTime,
+                    Data = new Dictionary<string, object>
+                    {
+                        ["durationMs"] = ev.DurationMs,
+                        ["success"] = ev.Success,
+                        ["component"] = ev.Component
+                    }
+                })
+            );
+
+            var subscription = allEvents.Subscribe(async ev => await handler(ev));
+
+            var subscriptionInfo = new EventSubscription
+            {
+                SubscriptionId = subscriptionId,
+                EventType = "ALL",
+                Filter = "ALL_EVENTS",
+                SubscribedAt = DateTime.UtcNow,
+                SubscriberInfo = GetSubscriberInfo()
+            };
+
+            _subscriptions[subscriptionId] = (subscription, subscriptionInfo);
+
+            return subscriptionId;
+        }
+
+        public async Task<bool> UnsubscribeAsync(string subscriptionId)
+        {
+            if (_subscriptions.TryRemove(subscriptionId, out var subscription))
+            {
+                subscription.Subscription.Dispose();
+                _logger.LogInformation("Suscripción removida: {SubscriptionId}", subscriptionId);
+                return true;
+            }
+
+            return false;
+        }
+
+        // ========== Real-time Dashboard Methods ==========
+        // Infrastructure/Services/RealTimeMonitoringService.cs (continuación)
+
+        public async Task<List<ActiveSession>> GetActiveSessionsRealtimeAsync(int companyCodeId = 0)
+        {
+            try
+            {
+                var activeSessions = new List<ActiveSession>();
+
+                // Actualizar caché si es necesario
+                await UpdateActiveSessionsCacheAsync();
+
+                var sessions = companyCodeId == 0
+                    ? _activeSessions.Values
+                    : _activeSessions.Values.Where(s => s.CompanyCodeId == companyCodeId);
+
+                foreach (var cachedSession in sessions)
+                {
+                    // Verificar si la sesión sigue activa
+                    var sessionStillActive = await _userSessionService.IsSessionValidAsync(
+                        Guid.Parse(cachedSession.SessionId));
+
+                    if (sessionStillActive)
+                    {
+                        // Actualizar duración
+                        cachedSession.Duration = DateTime.UtcNow - cachedSession.LoginTime;
+                        cachedSession.LastActivity = DateTime.UtcNow;
+
+                        // Verificar anomalías
+                        var hasAnomaly = await _userSessionService.HasSessionAnomalyAsync(
+                            Guid.Parse(cachedSession.SessionId));
+                        cachedSession.IsSuspicious = hasAnomaly;
+
+                        if (hasAnomaly)
+                        {
+                            var anomalies = await _userSessionService.DetectSessionAnomaliesAsync(
+                                Guid.Parse(cachedSession.SessionId));
+                            cachedSession.Anomalies = anomalies
+                                .Select(a => a.Description)
+                                .ToList();
+                        }
+
+                        activeSessions.Add(cachedSession);
+                    }
+                    else
+                    {
+                        // Remover del caché si ya no está activa
+                        _activeSessions.TryRemove(cachedSession.SessionId, out _);
+                    }
+                }
+
+                return activeSessions
+                    .OrderByDescending(s => s.LastActivity)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error obteniendo sesiones activas en tiempo real");
+                return new List<ActiveSession>();
+            }
+        }
+
+        public async Task<List<RecentAlert>> GetRecentAlertsRealtimeAsync(int minutes = 5, string severity = null)
+        {
+            var cutoffTime = DateTime.UtcNow.AddMinutes(-minutes);
+
+            var recentAlerts = _alertBuffer
+                .Where(a => a.Timestamp >= cutoffTime)
+                .Where(a => severity == null || a.Level.ToString().Equals(severity, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(a => a.Timestamp)
+                .Take(50)
+                .Select(a => new RecentAlert
+                {
+                    AlertId = a.AlertId,
+                    AlertType = a.AlertType,
+                    Title = a.Title,
+                    Message = a.Message,
+                    Severity = a.Level.ToString(),
+                    Timestamp = a.Timestamp,
+                    UserId = a.UserId,
+                    CompanyCodeId = a.CompanyCodeId,
+                    IsAcknowledged = false, // Debería venir de base de datos
+                    RequiresAction = a.Level == AlertLevel.Critical || a.Level == AlertLevel.Error
+                })
+                .ToList();
+
+            return recentAlerts;
+        }
+
+        public async Task<List<SecurityEventLog>> GetRecentSecurityEventsAsync(int count = 50)
+        {
+            return _securityEventBuffer
+                .OrderByDescending(e => e.Timestamp)
+                .Take(count)
+                .ToList();
+        }
+
+        public async Task<List<PerformanceMetric>> GetPerformanceMetricsAsync(TimeSpan duration)
+        {
+            var cutoffTime = DateTime.UtcNow - duration;
+
+            var metrics = new List<PerformanceMetric>();
+
+            // Obtener métricas de servicios
+            foreach (var serviceMetric in _serviceMetrics.Values)
+            {
+                metrics.Add(new PerformanceMetric
+                {
+                    MetricName = "ResponseTime",
+                    Component = serviceMetric.ServiceName,
+                    Timestamp = DateTime.UtcNow,
+                    Value = (decimal)serviceMetric.AvgResponseTimeMs,
+                    Unit = "ms",
+                    Tags = new Dictionary<string, string>
+                    {
+                        ["service"] = serviceMetric.ServiceName,
+                        ["metric_type"] = "performance"
+                    }
+                });
+
+                metrics.Add(new PerformanceMetric
+                {
+                    MetricName = "ErrorRate",
+                    Component = serviceMetric.ServiceName,
+                    Timestamp = DateTime.UtcNow,
+                    Value = serviceMetric.ErrorRatePercent,
+                    Unit = "%",
+                    Tags = new Dictionary<string, string>
+                    {
+                        ["service"] = serviceMetric.ServiceName,
+                        ["metric_type"] = "reliability"
+                    }
+                });
+            }
+
+            // Obtener métricas del sistema
+            var systemMetrics = await GetSystemMetricsAsync();
+            metrics.AddRange(systemMetrics);
+
+            return metrics
+                .Where(m => m.Timestamp >= cutoffTime)
+                .OrderByDescending(m => m.Timestamp)
+                .ToList();
+        }
+
+        public async Task SendRealtimeAlertAsync(RealtimeAlert alert)
+        {
+            if (!_config.Value.EnableRealtimeAlerts || !_isRunning)
+                return;
+
+            try
+            {
+                // Validar throttling
+                if (!CanSendAlert(alert.AlertType))
+                {
+                    _logger.LogWarning("Throttling activado para alertas de tipo: {AlertType}", alert.AlertType);
+                    return;
+                }
+
+                // Publicar en el bus de alertas
+                _alertBus.OnNext(alert);
+
+                // Agregar al buffer
+                AddToAlertBuffer(alert);
+
+                // Enviar notificaciones a los recipientes
+                await SendAlertNotificationsAsync(alert);
+
+                // Registrar en sistema de alertas principal
+                await _securityAlertService.CreateAlertAsync(new SecurityAlert
+                {
+                    AlertType = alert.AlertType,
+                    Severity = alert.Level.ToString(),
+                    UserId = alert.UserId,
+                    CompanyCodeId = alert.CompanyCodeId,
+                    Description = alert.Message,
+                    Data = JsonSerializer.Serialize(alert.Data)
+                });
+
+                _logger.LogInformation("Alerta enviada: {AlertType} - {Title} (Nivel: {Level})",
+                    alert.AlertType, alert.Title, alert.Level);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error enviando alerta: {AlertType}", alert.AlertType);
+            }
+        }
+
+        public async Task BroadcastToAdminsAsync(string message, AlertLevel level, string category = null)
+        {
+            var alert = new RealtimeAlert
+            {
+                AlertType = "ADMIN_BROADCAST",
+                Title = "Mensaje del Sistema",
+                Message = message,
+                Level = level,
+                Category = category ?? "SYSTEM",
+                Recipients = _config.Value.CriticalAlertRecipients,
+                Persistent = level == AlertLevel.Critical
+            };
+
+            await SendRealtimeAlertAsync(alert);
+        }
+
+        public async Task NotifyUserAsync(int userId, string message, AlertLevel level)
+        {
+            var alert = new RealtimeAlert
+            {
+                AlertType = "USER_NOTIFICATION",
+                Title = "Notificación del Sistema",
+                Message = message,
+                Level = level,
+                UserId = userId,
+                Recipients = new List<string> { userId.ToString() }
+            };
+
+            await SendRealtimeAlertAsync(alert);
+        }
+
+        public async Task NotifyCompanyAdminsAsync(int companyCodeId, string message, AlertLevel level)
+        {
+            // Obtener administradores de la empresa
+            var adminUsers = await GetCompanyAdminsAsync(companyCodeId);
+            var recipientIds = adminUsers.Select(u => u.Id.ToString()).ToList();
+
+            if (!recipientIds.Any())
+                return;
+
+            var alert = new RealtimeAlert
+            {
+                AlertType = "COMPANY_ADMIN_NOTIFICATION",
+                Title = "Notificación para Administradores",
+                Message = message,
+                Level = level,
+                CompanyCodeId = companyCodeId,
+                Recipients = recipientIds
+            };
+
+            await SendRealtimeAlertAsync(alert);
+        }
+
+        public async Task<SystemHealth> GetSystemHealthAsync()
+        {
+            if (DateTime.UtcNow - _lastHealthCheck < TimeSpan.FromSeconds(30))
+                return _currentHealth;
+
+            try
+            {
+                _currentHealth = new SystemHealth
+                {
+                    CheckTime = DateTime.UtcNow
+                };
+
+                // Verificar salud de componentes
+                _currentHealth.Database = await CheckDatabaseHealthAsync();
+                _currentHealth.Authentication = await CheckAuthenticationHealthAsync();
+                _currentHealth.SessionManagement = await CheckSessionManagementHealthAsync();
+                _currentHealth.AuditSystem = await CheckAuditSystemHealthAsync();
+                _currentHealth.Monitoring = await CheckMonitoringHealthAsync();
+
+                // Obtener métricas del sistema
+                var metrics = await GetSystemMetricsAsync();
+                _currentHealth.CpuUsage = (decimal)metrics
+                    .FirstOrDefault(m => m.MetricName == "CpuUsage")?.Value ?? 0;
+                _currentHealth.MemoryUsage = (decimal)metrics
+                    .FirstOrDefault(m => m.MetricName == "MemoryUsage")?.Value ?? 0;
+                _currentHealth.DiskUsage = (decimal)metrics
+                    .FirstOrDefault(m => m.MetricName == "DiskUsage")?.Value ?? 0;
+                _currentHealth.NetworkLatency = (decimal)metrics
+                    .FirstOrDefault(m => m.MetricName == "NetworkLatency")?.Value ?? 0;
+
+                // Calcular puntaje de salud
+                _currentHealth.HealthScore = CalculateHealthScore(_currentHealth);
+                _currentHealth.OverallStatus = DetermineOverallStatus(_currentHealth.HealthScore);
+
+                // Identificar issues
+                _currentHealth.Issues = await DetectHealthIssuesAsync(_currentHealth);
+                _currentHealth.Recommendations = GenerateHealthRecommendations(_currentHealth);
+
+                _lastHealthCheck = DateTime.UtcNow;
+
+                return _currentHealth;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error obteniendo salud del sistema");
+
+                return new SystemHealth
+                {
+                    OverallStatus = "UNHEALTHY",
+                    HealthScore = 0,
+                    Issues = new List<HealthIssue>
+            {
+                new HealthIssue
+                {
+                    Component = "Monitoring",
+                    Issue = "Error en verificación de salud",
+                    Severity = "HIGH",
+                    Impact = "No se puede determinar el estado del sistema",
+                    RecommendedAction = "Revisar logs del servicio de monitoreo"
+                }
+            }
+                };
+            }
+        }
+
+        public async Task<List<ServiceStatus>> GetServiceStatusesAsync()
+        {
+            if (!_serviceStatuses.Any())
+            {
+                await RefreshServiceStatusesAsync();
+            }
+
+            return _serviceStatuses;
+        }
+
+        public async Task<Dictionary<string, ServiceMetrics>> GetServiceMetricsAsync()
+        {
+            return _serviceMetrics.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value
+            );
+        }
+
+        public async Task<bool> CheckServiceHealthAsync(string serviceName)
+        {
+            var service = _serviceStatuses.FirstOrDefault(s => s.ServiceName == serviceName);
+            if (service != null)
+            {
+                return service.IsRunning &&
+                       (DateTime.UtcNow - service.LastHealthCheck) < TimeSpan.FromMinutes(5);
+            }
+
+            // Si no está en la lista, verificar directamente
+            return await TestServiceConnectionAsync(serviceName);
+        }
+
+        public async Task UpdateConfigurationAsync(MonitoringConfiguration config)
+        {
+            if (config == null)
+                throw new ArgumentNullException(nameof(config));
+
+            _logger.LogInformation("Actualizando configuración de monitoreo");
+
+            // Validar configuración
+            ValidateConfiguration(config);
+
+            // Actualizar configuración
+            _config.Value = config;
+
+            // Reconfigurar timers si es necesario
+            await ReconfigureTimersAsync();
+
+            _logger.LogInformation("Configuración de monitoreo actualizada exitosamente");
+
+            // Publicar evento de sistema
+            await PublishSystemEventAsync(new SystemEvent
+            {
+                EventType = "CONFIGURATION_UPDATED",
+                Component = "RealTimeMonitoringService",
+                Message = "Configuración de monitoreo actualizada",
+                Severity = "INFO",
+                Details = new Dictionary<string, object>
+                {
+                    ["updatedBy"] = config.UpdatedBy,
+                    ["changes"] = GetConfigurationChanges(_config.Value, config)
+                }
+            });
+        }
+
+        public async Task<MonitoringConfiguration> GetCurrentConfigurationAsync()
+        {
+            return _config.Value;
+        }
+
+        public async Task<bool> EnableFeatureAsync(string feature, bool enabled)
+        {
+            switch (feature.ToUpper())
+            {
+                case "SECURITY_MONITORING":
+                    _config.Value.EnableSecurityMonitoring = enabled;
+                    break;
+                case "PERFORMANCE_MONITORING":
+                    _config.Value.EnablePerformanceMonitoring = enabled;
+                    break;
+                case "BUSINESS_EVENT_MONITORING":
+                    _config.Value.EnableBusinessEventMonitoring = enabled;
+                    break;
+                case "SYSTEM_HEALTH_MONITORING":
+                    _config.Value.EnableSystemHealthMonitoring = enabled;
+                    break;
+                case "REALTIME_ALERTS":
+                    _config.Value.EnableRealtimeAlerts = enabled;
+                    break;
+                default:
+                    _logger.LogWarning("Característica desconocida: {Feature}", feature);
+                    return false;
+            }
+
+            _config.Value.LastUpdated = DateTime.UtcNow;
+            _config.Value.UpdatedBy = "SYSTEM";
+
+            _logger.LogInformation("Característica {Feature} {State}",
+                feature, enabled ? "habilitada" : "deshabilitada");
+
+            return true;
+        }
+
+        public async Task SetRetentionPeriodAsync(TimeSpan retention)
+        {
+            if (retention < TimeSpan.FromHours(1) || retention > TimeSpan.FromDays(365))
+            {
+                throw new ArgumentException("El período de retención debe estar entre 1 hora y 365 días");
+            }
+
+            _config.Value.EventRetentionPeriod = retention;
+            _config.Value.LastUpdated = DateTime.UtcNow;
+            _config.Value.UpdatedBy = "SYSTEM";
+
+            _logger.LogInformation("Período de retención actualizado a {RetentionDays} días",
+                retention.TotalDays);
+        }
+
+        public async Task ClearEventBufferAsync()
+        {
+            _logger.LogInformation("Limpiando buffers de eventos");
+
+            lock (_lock)
+            {
+                while (_securityEventBuffer.TryDequeue(out _)) { }
+                while (_performanceEventBuffer.TryDequeue(out _)) { }
+                while (_alertBuffer.TryDequeue(out _)) { }
+
+                _eventCounters.Clear();
+                _eventTimestamps.Clear();
+                _responseTimes.Clear();
+            }
+
+            _logger.LogInformation("Buffers de eventos limpiados exitosamente");
+        }
+
+        public async Task<int> GetActiveSubscribersCountAsync()
+        {
+            return _subscriptions.Count(s => s.Value.Info.IsActive);
+        }
+
+        public async Task<List<EventSubscription>> GetActiveSubscriptionsAsync()
+        {
+            return _subscriptions.Values
+                .Where(s => s.Info.IsActive)
+                .Select(s => s.Info)
+                .ToList();
+        }
+
+        public async Task<MonitoringStatistics> GetStatisticsAsync(DateTime? startDate = null, DateTime? endDate = null)
+        {
+            startDate ??= DateTime.UtcNow.AddDays(-1);
+            endDate ??= DateTime.UtcNow;
+
+            var statistics = new MonitoringStatistics
+            {
+                PeriodStart = startDate.Value,
+                PeriodEnd = endDate.Value
+            };
+
+            // Aquí iría la lógica para obtener estadísticas de la base de datos
+            // Por ahora, devolver estadísticas en memoria
+
+            statistics.TotalEventsPublished = _eventCounters.Values.Sum();
+            statistics.AverageEventsPerSecond = CalculateAverageEventsPerSecond();
+            statistics.PeakEventsPerSecond = CalculatePeakEventsPerSecond();
+
+            // Calcular estadísticas por tipo de evento
+            var eventsByType = CategorizeEvents();
+            statistics.SecurityEventsCount = eventsByType.GetValueOrDefault("SECURITY", 0);
+            statistics.AuditEventsCount = eventsByType.GetValueOrDefault("AUDIT", 0);
+            statistics.PerformanceEventsCount = eventsByType.GetValueOrDefault("PERFORMANCE", 0);
+            statistics.BusinessEventsCount = eventsByType.GetValueOrDefault("BUSINESS", 0);
+            statistics.SystemEventsCount = eventsByType.GetValueOrDefault("SYSTEM", 0);
+
+            statistics.MaxConcurrentSubscriptions = _subscriptions.Count;
+            statistics.AverageActiveSubscriptions = statistics.MaxConcurrentSubscriptions; // Simplificado
+
+            return statistics;
+        }
+
+        // ========== MÉTODOS PRIVADOS ==========
+
+        private void InitializeBuffers()
+        {
+            _logger.LogDebug("Inicializando buffers de monitoreo");
+
+            // Configurar tamaño máximo de buffers
+            for (int i = 0; i < _config.Value.EventBufferSize && i < 1000; i++)
+            {
+                _securityEventBuffer.Enqueue(new SecurityEventLog());
+                _performanceEventBuffer.Enqueue(new PerformanceEvent());
+                _alertBuffer.Enqueue(new RealtimeAlert());
+            }
+
+            // Limpiar buffers iniciales
+            ClearEventBufferAsync().ConfigureAwait(false);
+        }
+
+        private void SetupInternalSubscriptions()
+        {
+            _logger.LogDebug("Configurando suscripciones internas");
+
+            // Suscribirse a eventos de seguridad para procesamiento interno
+            SubscribeToSecurityEventsAsync(async ev =>
+            {
+                // Actualizar métricas en tiempo real
+                UpdateRealtimeMetrics(ev);
+
+                // Verificar patrones sospechosos
+                await DetectSecurityPatternsAsync(ev);
+
+            }, "LOGIN_FAILED,SESSION_CREATED,SESSION_TERMINATED").ConfigureAwait(false);
+
+            // Suscribirse a eventos de performance
+            SubscribeToPerformanceEventsAsync(async ev =>
+            {
+                // Monitorear rendimiento
+                await MonitorPerformanceAsync(ev);
+
+            }).ConfigureAwait(false);
+        }
+
+        private void StartTimers()
+        {
+            _logger.LogDebug("Iniciando timers de monitoreo");
+
+            // Timer para recolección de métricas
+            _metricsCollectorTimer = new Timer(
+                async _ => await CollectMetricsAsync(),
+                null,
+                TimeSpan.Zero,
+                TimeSpan.FromSeconds(_config.Value.MetricsCollectionIntervalSeconds)
+            );
+
+            // Timer para verificación de salud
+            _healthCheckTimer = new Timer(
+                async _ => await PerformHealthCheckAsync(),
+                null,
+                TimeSpan.Zero,
+                TimeSpan.FromSeconds(_config.Value.HealthCheckIntervalSeconds)
+            );
+
+            // Timer para limpieza de buffers
+            _bufferCleanupTimer = new Timer(
+                async _ => await CleanupOldBuffersAsync(),
+                null,
+                TimeSpan.FromHours(1),
+                TimeSpan.FromHours(1)
+            );
+
+            // Timer para procesamiento de alertas
+            _alertProcessorTimer = new Timer(
+                async _ => await ProcessPendingAlertsAsync(),
+                null,
+                TimeSpan.Zero,
+                TimeSpan.FromSeconds(30)
+            );
+        }
+
+        private void StopTimers()
+        {
+            _logger.LogDebug("Deteniendo timers de monitoreo");
+
+            _metricsCollectorTimer?.Dispose();
+            _healthCheckTimer?.Dispose();
+            _bufferCleanupTimer?.Dispose();
+            _alertProcessorTimer?.Dispose();
+        }
+
+        private void EnrichSecurityEvent(SecurityEventLog securityEvent)
+        {
+            // Agregar información contextual
+            securityEvent.Source = securityEvent.Source ?? "ERP_MAHADI";
+            securityEvent.CorrelationId = securityEvent.CorrelationId ?? Guid.NewGuid().ToString();
+
+            // Determinar severidad si no está especificada
+            if (string.IsNullOrEmpty(securityEvent.Severity))
+            {
+                securityEvent.Severity = DetermineEventSeverity(securityEvent.EventType);
+            }
+        }
+
+        private bool CanPublishEvent(string eventCategory, string eventType)
+        {
+            var key = $"{eventCategory}:{eventType}";
+
+            if (!_eventTimestamps.ContainsKey(key))
+            {
+                _eventTimestamps[key] = new ConcurrentQueue<DateTime>();
+            }
+
+            var queue = _eventTimestamps[key];
+
+            // Limpiar timestamps antiguos (último minuto)
+            var cutoff = DateTime.UtcNow.AddMinutes(-1);
+            while (queue.TryPeek(out var timestamp) && timestamp < cutoff)
+            {
+                queue.TryDequeue(out _);
+            }
+
+            // Verificar rate limit
+            if (queue.Count >= _config.Value.MaxEventsPerSecond)
+            {
+                return false;
+            }
+
+            queue.Enqueue(DateTime.UtcNow);
+            return true;
+        }
+
+        private void AddToSecurityEventBuffer(SecurityEventLog securityEvent)
+        {
+            _securityEventBuffer.Enqueue(securityEvent);
+
+            // Mantener tamaño del buffer
+            while (_securityEventBuffer.Count > _config.Value.EventBufferSize)
+            {
+                _securityEventBuffer.TryDequeue(out _);
+            }
+        }
+
+        private void AddToPerformanceEventBuffer(PerformanceEvent performanceEvent)
+        {
+            _performanceEventBuffer.Enqueue(performanceEvent);
+
+            while (_performanceEventBuffer.Count > _config.Value.EventBufferSize / 2)
+            {
+                _performanceEventBuffer.TryDequeue(out _);
+            }
+        }
+
+        private void AddToAlertBuffer(RealtimeAlert alert)
+        {
+            _alertBuffer.Enqueue(alert);
+
+            while (_alertBuffer.Count > 1000) // Límite fijo para alertas
+            {
+                _alertBuffer.TryDequeue(out _);
+            }
+        }
+
+        private void UpdateEventMetrics(string category, string eventType)
+        {
+            var key = $"{category}:{eventType}";
+            _eventCounters.AddOrUpdate(key, 1, (k, v) => v + 1);
+        }
+
+        private void UpdateServiceMetrics(PerformanceEvent performanceEvent)
+        {
+            var serviceName = performanceEvent.Component;
+
+            if (!_serviceMetrics.ContainsKey(serviceName))
+            {
+                _serviceMetrics[serviceName] = new ServiceMetrics
+                {
+                    ServiceName = serviceName
+                };
+            }
+
+            var metrics = _serviceMetrics[serviceName];
+
+            // Actualizar métricas
+            metrics.RequestCount++;
+
+            if (!performanceEvent.Success)
+            {
+                metrics.ErrorCount++;
+            }
+
+            // Actualizar tiempos de respuesta
+            if (!_responseTimes.ContainsKey(serviceName))
+            {
+                _responseTimes[serviceName] = new ConcurrentQueue<long>();
+            }
+
+            var responseTimes = _responseTimes[serviceName];
+            responseTimes.Enqueue(performanceEvent.DurationMs);
+
+            // Mantener solo los últimos 1000 valores
+            while (responseTimes.Count > 1000)
+            {
+                responseTimes.TryDequeue(out _);
+            }
+
+            // Recalcular métricas
+            if (responseTimes.Any())
+            {
+                var times = responseTimes.ToArray();
+                metrics.AvgResponseTimeMs = times.Average();
+                metrics.P95ResponseTimeMs = CalculatePercentile(times, 95);
+                metrics.P99ResponseTimeMs = CalculatePercentile(times, 99);
+            }
+
+            metrics.ErrorRatePercent = metrics.RequestCount > 0
+                ? (decimal)metrics.ErrorCount / metrics.RequestCount * 100
+                : 0;
+        }
+
+        private async Task CheckForSecurityAlertAsync(SecurityEventLog securityEvent)
+        {
+            // Verificar si el evento debe generar una alerta
+            var shouldAlert = await _securityAlertService.ShouldGenerateAlertAsync(securityEvent);
+
+            if (shouldAlert)
+            {
+                var alert = new RealtimeAlert
+                {
+                    AlertType = securityEvent.EventType,
+                    Title = GetAlertTitle(securityEvent.EventType),
+                    Message = GetAlertMessage(securityEvent),
+                    Level = GetAlertLevel(securityEvent.Severity),
+                    Category = securityEvent.Category,
+                    Timestamp = securityEvent.Timestamp,//Datetime
+                    UserId = securityEvent.UserId,// int
+                    CompanyCodeId = securityEvent.CompanyCodeId,//int
+                    Source = securityEvent.Source,
+                    Data = securityEvent.Data,//dictionary
+                    Recipients = GetAlertRecipients(securityEvent),
+                    Persistent = securityEvent.Severity == "CRITICAL"
+                };
+
+                await SendRealtimeAlertAsync(alert);
+            }
+        }
+
+        private async Task CheckPerformanceThresholdsAsync(PerformanceEvent performanceEvent)
+        {
+            var thresholds = _config.Value.AlertThresholds
+                .Where(t => t.Key == performanceEvent.Operation ||
+                           t.Key == performanceEvent.Component)
+                .ToList();
+
+            foreach (var threshold in thresholds)
+            {
+                var metricValue = GetMetricValue(performanceEvent, threshold.Value.MetricName);
+
+                if (metricValue >= threshold.Value.CriticalThreshold)
+                {
+                    await SendRealtimeAlertAsync(new RealtimeAlert
+                    {
+                        AlertType = "PERFORMANCE_CRITICAL",
+                        Title = $"Umbral crítico de performance excedido: {threshold.Value.MetricName}",
+                        Message = $"{performanceEvent.Operation} en {performanceEvent.Component} " +
+                                 $"excedió umbral crítico: {metricValue} >= {threshold.Value.CriticalThreshold}",
+                        Level = AlertLevel.Critical,
+                        Category = "PERFORMANCE",
+                        Data = new Dictionary<string, object>
+                        {
+                            ["metric"] = threshold.Value.MetricName,
+                            ["value"] = metricValue,
+                            ["threshold"] = threshold.Value.CriticalThreshold,
+                            ["component"] = performanceEvent.Component,
+                            ["operation"] = performanceEvent.Operation
+                        }
+                    });
+                }
+                else if (metricValue >= threshold.Value.WarningThreshold)
+                {
+                    await SendRealtimeAlertAsync(new RealtimeAlert
+                    {
+                        AlertType = "PERFORMANCE_WARNING",
+                        Title = $"Advertencia de performance: {threshold.Value.MetricName}",
+                        Message = $"{performanceEvent.Operation} en {performanceEvent.Component} " +
+                                 $"excedió umbral de advertencia: {metricValue} >= {threshold.Value.WarningThreshold}",
+                        Level = AlertLevel.Warning,
+                        Category = "PERFORMANCE",
+                        Data = new Dictionary<string, object>
+                        {
+                            ["metric"] = threshold.Value.MetricName,
+                            ["value"] = metricValue,
+                            ["threshold"] = threshold.Value.WarningThreshold
+                        }
+                    });
+                }
+            }
+        }
+
+        // ... (continuaría con el resto de métodos privados de apoyo)
+
+        public void Dispose()
+        {
+            if (_isDisposed) return;
+
+            _isDisposed = true;
+
+            StopTimers();
+            ClearAllSubscriptions();
+
+            _securityEventBus.Dispose();
+            _auditEventBus.Dispose();
+            _performanceEventBus.Dispose();
+            _businessEventBus.Dispose();
+            _systemEventBus.Dispose();
+            _alertBus.Dispose();
+
+            _logger.LogInformation("RealTimeMonitoringService disposed");
+        }
+    }
+}
