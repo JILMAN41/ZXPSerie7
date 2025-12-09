@@ -524,7 +524,11 @@ BEGIN
         [IPAddress]             NVARCHAR(45) NULL,
         [UserAgent]             NVARCHAR(500) NULL,
         [Status]                VARCHAR(20) NOT NULL DEFAULT 'Active',
-        [LogoutTimestamp]       DATETIME2 NULL
+        [LogoutTimestamp]       DATETIME2 NULL,
+[CreatedOn] [datetime2](7) NOT NULL
+[CreatedBy] [varchar](50) NOT NULL,
+[ModifiedOn] [datetime2](7) NULL,
+[ModifiedBy] [varchar](50) NULL
     );
 
     CREATE INDEX IX_UserSessions_UserId ON [security].[UserSessions]([UserId]);
