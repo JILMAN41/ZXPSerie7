@@ -1695,7 +1695,7 @@ GO
 -- =============================================
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'CompanyConnectionSettings' AND schema_id = SCHEMA_ID('master'))
 BEGIN
-	CREATE TABLE master.CompanyConnectionSettings (
+	CREATE TABLE [master].[CompanyConnectionSettings] (
 		Id INT IDENTITY(1,1) PRIMARY KEY,
 		CompanyCodeId INT NOT NULL,                     -- FK a CompanyCodes
 		ConnectionProviderId INT NOT NULL,              -- FK a ConnectionProviders
@@ -1745,7 +1745,9 @@ BEGIN
 		EncryptionKey NVARCHAR(200) NULL,               -- Clave específica para desencriptar .bin
 		RequiresTwoFactor BIT NOT NULL DEFAULT 0,       -- Requiere 2FA para esta conexión
 		AllowedIPRange NVARCHAR(100) NULL,              -- Rango de IPs permitidas (CIDR)
-    
+
+		ActivationDate datetime2 NULL,
+		DeactivationDate datetime2 NULL,
 		-- Metadata
 		Tags NVARCHAR(500) NULL,                        -- Tags para filtrado: "Sucursal", "Backup", "Cloud"
 		Notes NVARCHAR(1000) NULL,
