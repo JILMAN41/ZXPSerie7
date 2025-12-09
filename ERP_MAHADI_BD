@@ -1740,7 +1740,7 @@ BEGIN
 		CircuitBreakerEnabled BIT NOT NULL DEFAULT 1,   -- Habilita circuit breaker pattern
 		CircuitBreakerThreshold INT NOT NULL DEFAULT 5, -- Fallos consecutivos para abrir circuito
 		CircuitBreakerTimeoutSeconds INT NOT NULL DEFAULT 60, -- Tiempo antes de reintentar
-    
+    	CircuitBreakerTrippedOn datetime2 NULL,
 		-- Configuración de seguridad
 		EncryptionKey NVARCHAR(200) NULL,               -- Clave específica para desencriptar .bin
 		RequiresTwoFactor BIT NOT NULL DEFAULT 0,       -- Requiere 2FA para esta conexión
