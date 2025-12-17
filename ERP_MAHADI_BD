@@ -679,34 +679,63 @@ END
 GO
 
 -- 5.11 PASSWORD HISTORY (Historial de contraseñas)
-IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'PasswordHistory' AND schema_id = SCHEMA_ID(N'security'))
+
+-- 5.11 PASSWORD HISTORY (Historial de contraseñas)
+IF NOT EXISTS ( SELECT 1 FROM sys.tables WHERE name = N'PasswordHistory' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[PasswordHistory](
-	[PasswordHistoryId] [bigint] IDENTITY(1,1) NOT NULL,
-	[UserId] [int] NOT NULL,
-	[PasswordHash] [varbinary](256) NOT NULL,
-	[PasswordSalt] [varbinary](128) NOT NULL,
-	[HashAlgorithm] [varchar](50) NOT NULL,
-	[HashVersion] [int] NOT NULL,
-	[ChangedByUserId] [int] NULL,
-	[ChangeType] [varchar](20) NOT NULL,
-	[ChangeReason] [nvarchar](200) NULL,
-	[ClientIP] [varchar](45) NULL,
-	[UserAgent] [nvarchar](500) NULL,
-	[DeviceId] [int] NULL,
-	[SetOn] [datetime2](7) NOT NULL,
+        [MARY KEY,
+        [UserId]            INT NOT NULL,
+        [PasswordHash]      VARBINARY(256) NOT NULL,
+        [PasswordSalt]      VARBINARY(128) NOT NULL,
+        [HashAlgorithm]     VARCHAR(50) NOT NULL,
+        [HashVersion]       INT NOT NULL,
+        [ChangedByUserId]   INT NULL,
+        [ChangeType]        VARCHAR(20) NOT NULL,
+        [ChangeReason]      NVARCHAR(200) NULL,
+        [ClientIP]          VARCHAR(45) NULL,
+        [UserAgent]         VARCHAR(500) NULL,
+        [DeviceId]          INT NULL,
+        [SetOn]             DATETIME2 NOT NULL DEFAULT GETUTCDATE()
     );
 
-    CREATE INDEX IX_PasswordHistory_UserId ON [security].[PasswordHistory]([UserId]);
+    -- Índice básico por UserId (como en el patrón)
+    CREATE INDEX IX_PasswordHistory_UserId
+        ON [security].PasswordHistory;
+
+    -- Claves foráneas con WITH CHECK, siguiendo el patrón
+    ALTER TABLE [security].[PasswordHistory] WITH CHECK
+        ADD CONSTRAINT [FK_PasswordHistory_Users]
+        FOREIGN KEY ([UserId])
+        REFERENCES [security].Users;
 
     ALTER TABLE [security].[PasswordHistory]
-    ADD CONSTRAINT FK_PasswordHistory_Users
-        FOREIGN KEY ([UserId])
-        REFERENCES [security].[Users]([UserId]);
+        CHECK CONSTRAINT [FK_PasswordHistory_Users];
+
+    ALTER TABLE [security].[PasswordHistory] WITH CHECK
+        ADD CONSTRAINT [FK_PasswordHistory_ChangedBy]
+        FOREIGN KEY ([ChangedByUserId])
+        REFERENCES [security].Users;
+
+    ALTER TABLE [security].[PasswordHistory]
+        CHECK CONSTRAINT [FK_PasswordHistory_ChangedBy];
+
+    ALTER TABLE [security].[PasswordHistory] WITH CHECK
+        ADD CONSTRAINT [FK_PasswordHistory_Devices]
+        FOREIGN KEY ([DeviceId])
+        REFERENCES [security].CorporateDevices;
+
+    ALTER TABLE [security].[PasswordHistory]
+        CHECK CONSTRAINT [FK_PasswordHistory_Devices];
 
     PRINT '>> Tabla [security].[PasswordHistory] creada.';
 END
+ELSE
+BEGIN
+    PRINT '>> La tabla [security].[PasswordHistory] ya existe. No se realizaron cambios.';
+END
 GO
+
 
 -- 5.12 GEOLOCATION POLICIES (Políticas de geolocalización)
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'GeolocationPolicies' AND schema_id = SCHEMA_ID(N'security'))
