@@ -378,7 +378,7 @@ BEGIN
         [LockedUntil]           DATETIME2(7) NULL,
         
         -- Contexto de negocio
-        [CompanyCode]           CHAR(4) NULL,
+        [CompanyCode]           INT NULL,
         [EmployeeId]            INT NULL,
         
         -- Migración legada
