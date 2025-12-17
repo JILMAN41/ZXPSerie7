@@ -1978,6 +1978,48 @@ END;
 GO
 
 
+-- =============================================
+-- TABLA: SecurityLogs
+-- Registro de eventos de seguridad críticos
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'SecurityLogs' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+    CREATE TABLE [security].[SecurityLogs](
+        [SecurityLogId]     BIGINT IDENTITY(1,1) PRIMARY KEY,
+        [UserId]            INT NOT NULL,
+        [EventType]         VARCHAR(50) NOT NULL,           -- PASSWORD_CHANGED, USER_LOCKED, ROLE_ASSIGNED, etc.
+        [EventDetails]      NVARCHAR(1000) NULL,
+        [IpAddress]         VARCHAR(45) NULL,
+        [UserAgent]         NVARCHAR(500) NULL,
+        [PerformedBy]       VARCHAR(50) NOT NULL,           -- Usuario o SYSTEM que ejecutó la acción
+        [EventDate]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [Severity]          VARCHAR(20) NOT NULL DEFAULT 'INFO', -- DEBUG, INFO, WARNING, ERROR, CRITICAL
+        [AdditionalData]    NVARCHAR(MAX) NULL,             -- JSON con datos adicionales
+        
+        -- Auditoría
+        [CreatedOn]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]         VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+        
+        -- Foreign Keys
+        CONSTRAINT [FK_SecurityLogs_Users] 
+            FOREIGN KEY ([UserId]) 
+            REFERENCES [security].[Users]([UserId]),
+        
+        -- Índices para búsqueda rápida
+        INDEX [IX_SecurityLogs_UserId] ([UserId]),
+        INDEX [IX_SecurityLogs_EventType] ([EventType]),
+        INDEX [IX_SecurityLogs_EventDate] ([EventDate]),
+        INDEX [IX_SecurityLogs_PerformedBy] ([PerformedBy])
+    );
+    
+    PRINT '>> Tabla [security].[SecurityLogs] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [security].[SecurityLogs] ya existe.';
+END;
+GO
+
 
 -- =============================================
 -- VISTA: vw_CompanyActiveConnections
