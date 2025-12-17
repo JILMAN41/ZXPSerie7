@@ -682,11 +682,19 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'PasswordHistory' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[PasswordHistory](
-        [Id]                BIGINT IDENTITY(1,1) PRIMARY KEY,
-        [UserId]            INT NOT NULL,
-        [PasswordHash]      VARBINARY(256) NOT NULL,
-        [PasswordSalt]      VARBINARY(128) NOT NULL,
-        [SetOn]             DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+	[PasswordHistoryId] [bigint] IDENTITY(1,1) NOT NULL,
+	[UserId] [int] NOT NULL,
+	[PasswordHash] [varbinary](256) NOT NULL,
+	[PasswordSalt] [varbinary](128) NOT NULL,
+	[HashAlgorithm] [varchar](50) NOT NULL,
+	[HashVersion] [int] NOT NULL,
+	[ChangedByUserId] [int] NULL,
+	[ChangeType] [varchar](20) NOT NULL,
+	[ChangeReason] [nvarchar](200) NULL,
+	[ClientIP] [varchar](45) NULL,
+	[UserAgent] [nvarchar](500) NULL,
+	[DeviceId] [int] NULL,
+	[SetOn] [datetime2](7) NOT NULL,
     );
 
     CREATE INDEX IX_PasswordHistory_UserId ON [security].[PasswordHistory]([UserId]);
