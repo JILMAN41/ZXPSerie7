@@ -455,32 +455,81 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'ClientDevices' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
     CREATE TABLE [security].[ClientDevices](
-        [DeviceId]          INT IDENTITY(1,1) PRIMARY KEY,
-        [DeviceGuid]        UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
-        [SerialPC]          NVARCHAR(50) NOT NULL,
-        [MacEthernet]       NVARCHAR(50) NULL,
-        [MacWifi]           NVARCHAR(50) NULL,
-        [UserId]            INT NULL,
-        [StatusAccess]      CHAR(1) NOT NULL DEFAULT 'N', -- S=Autorizado, N=No autorizado
-        [StatusText]        VARCHAR(50) NOT NULL DEFAULT 'Por Aprobar',
-        [CreatedOn]         DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
-        [CreatedBy]         VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
-        [ApprovedOn]        DATETIME2 NULL,
-        [ApprovedBy]        INT NULL,
-        [Notes]             NVARCHAR(500) NULL,
-        [Version]           ROWVERSION NOT NULL
-    );
-
-    CREATE INDEX IX_ClientDevices_SerialPC ON [security].[ClientDevices]([SerialPC]);
-    CREATE INDEX IX_ClientDevices_Status ON [security].[ClientDevices]([StatusAccess]);
-
-    ALTER TABLE [security].[ClientDevices]
-    ADD CONSTRAINT FK_ClientDevices_Users
-        FOREIGN KEY ([UserId])
-        REFERENCES [security].[Users]([UserId]);
-
-    PRINT '>> Tabla [security].[ClientDevices] creada (reemplaza M_Series_y_Macs_Autorizadas).';
+        -- Identificadores
+        [DeviceId]              INT IDENTITY(1,1) NOT NULL,
+        [DeviceGuid]            UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+        
+        -- Información del dispositivo
+        [SerialPC]              NVARCHAR(50) NOT NULL,
+        [MacEthernet]           NVARCHAR(50) NULL,
+        [MacWifi]               NVARCHAR(50) NULL,
+        [DeviceFingerprint]     NVARCHAR(256) NULL,
+        [InstallationId]        NVARCHAR(128) NULL,
+        
+        -- Información del navegador/sistema
+        [UserAgent]             NVARCHAR(512) NULL,
+        [Browser]               NVARCHAR(50) NULL,
+        [BrowserVersion]        NVARCHAR(20) NULL,
+        [Platform]              NVARCHAR(50) NULL,
+        [DeviceType]            NVARCHAR(20) NULL,
+        [Model]                 NVARCHAR(100) NULL,
+        [OsVersion]             NVARCHAR(100) NULL,
+        [ScreenResolution]      NVARCHAR(20) NULL,
+        
+        -- Auditoría de creación
+        [CreatedOn]             DATETIME2(7) NOT NULL DEFAULT GETUTCDATE(),
+        [CreatedBy]             VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+        [CreatedFromDevice]     NVARCHAR(128) NULL,
+        
+        -- Aprobación
+        [ApprovedOn]            DATETIME2(7) NULL,
+        [ApprovedBy]            INT NULL,
+        
+        -- Estado y seguridad
+        [StatusAccess]          CHAR(1) NOT NULL DEFAULT 'N',
+        [StatusText]            VARCHAR(50) NOT NULL DEFAULT 'Por Aprobar',
+        [IsTrusted]             BIT NOT NULL DEFAULT 0,
+        [BlockReason]           NVARCHAR(500) NULL,
+        [BlockedAt]             DATETIME2(7) NULL,
+        
+        -- Relación con usuario
+        [UserId]                INT NULL,
+        
+        -- Seguimiento de actividad
+        [LastSeenAt]            DATETIME2(7) NULL,
+        [LoginCount]            INT NOT NULL DEFAULT 0,
+        [LastIpAddress]         NVARCHAR(45) NULL,
+        [LastCountry]           NVARCHAR(100) NULL,
+        [LastCity]              NVARCHAR(100) NULL,
+        
+        -- Información adicional
+        [Notes]                 NVARCHAR(500) NULL,
+        
+        -- Auditoría de modificación
+        [ModifiedOn]            DATETIME2(7) NULL,
+        [ModifiedBy]            VARCHAR(50) NULL,
+        [ModifiedFromDevice]    NVARCHAR(128) NULL,
+        
+        -- Control de concurrencia
+        [Version]               TIMESTAMP NOT NULL,
+        
+        -- Llaves primarias
+        CONSTRAINT PK_ClientDevices PRIMARY KEY CLUSTERED ([DeviceId] ASC)
+            WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, 
+                  IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, 
+                  ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 85, 
+                  OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY],
+        
+        -- Llaves foráneas
+        CONSTRAINT FK_ClientDevices_Users FOREIGN KEY ([UserId])
+            REFERENCES [security].[Users] ([UserId])
+            
+    ) ON [PRIMARY];
+    
+    PRINT '>> Tabla [security].[ClientDevices] creada.';
 END
+ELSE
+    PRINT '>> Tabla [security].[ClientDevices] ya existe.';
 GO
 
 -- 5.5 CORPORATE DEVICES (Equivalente a Asigna_Maquina)
