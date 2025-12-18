@@ -2071,6 +2071,163 @@ BEGIN
 END;
 GO
 
+-- =============================================
+-- Tabla: security.Permissions
+-- Descripción: Catálogo de permisos del sistema para RBAC
+-- =============================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Permissions' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+	CREATE TABLE [security].[Permissions]
+	(
+		-- Primary Key
+		PermissionId INT IDENTITY(1,1) NOT NULL,
+		PermissionGuid UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+    
+		-- Información del Permiso
+		PermissionCode NVARCHAR(100) NOT NULL,           -- Código único (ej: "USER_CREATE", "INVOICE_APPROVE")
+		PermissionName NVARCHAR(200) NOT NULL,           -- Nombre descriptivo
+		[Description] NVARCHAR(500) NULL,                -- Descripción detallada
+    
+		-- Categorización
+		[Module] NVARCHAR(50) NOT NULL,                  -- Módulo (ej: "Security", "Billing", "Inventory")
+		Category NVARCHAR(50) NULL,                      -- Subcategoría
+		ResourceType NVARCHAR(50) NULL,                  -- Tipo de recurso (ej: "Entity", "Action", "Report")
+    
+		-- Estado y Control
+		IsActive BIT NOT NULL DEFAULT 1,
+		IsSystemPermission BIT NOT NULL DEFAULT 0,       -- No se puede eliminar si es true
+		RequiresApproval BIT NOT NULL DEFAULT 0,         -- Requiere aprobación para asignar
+		[Priority] INT NOT NULL DEFAULT 0,               -- Prioridad para ordenamiento
+    
+		-- Auditoría (BaseEntity)
+		CreatedOn DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
+		ModifiedOn DATETIME2(0) NULL,
+		CreatedBy NVARCHAR(50) NULL DEFAULT 'SYSTEM',
+		ModifiedBy NVARCHAR(50) NULL,
+    
+		-- Constraints
+		CONSTRAINT PK_Permissions PRIMARY KEY CLUSTERED (PermissionId),
+		CONSTRAINT UQ_Permissions_Code UNIQUE (PermissionCode),
+		CONSTRAINT UQ_Permissions_Guid UNIQUE (PermissionGuid)
+	);
+
+	-- =============================================
+	-- Índices
+	-- =============================================
+
+	-- Índice para búsquedas por módulo y estado activo
+	CREATE NONCLUSTERED INDEX IX_Permissions_Module_Active
+	ON [security].[Permissions]([Module], IsActive)
+	INCLUDE (PermissionCode, PermissionName)
+	WHERE IsActive = 1;
+
+	-- Índice para búsquedas por categoría
+	CREATE NONCLUSTERED INDEX IX_Permissions_Category
+	ON [security].[Permissions](Category)
+	WHERE IsActive = 1;
+
+	-- Índice para permisos del sistema
+	CREATE NONCLUSTERED INDEX IX_Permissions_System
+	ON [security].[Permissions](IsSystemPermission)
+	WHERE IsSystemPermission = 1;
+    PRINT '>> Tabla [master].[Permissions] creada.';
+
+	
+	-- =============================================
+	-- Datos Iniciales (Permisos Básicos del Sistema)
+	-- =============================================
+
+	INSERT INTO [security].[Permissions] 
+	(PermissionCode, PermissionName, [Description], [Module], Category, ResourceType, IsSystemPermission, IsActive, CreatedBy)
+	VALUES
+	-- ===== Módulo: Security =====
+	('USER_VIEW', 'Ver Usuarios', 'Permite visualizar la lista de usuarios', 'Security', 'Users', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('USER_CREATE', 'Crear Usuarios', 'Permite crear nuevos usuarios', 'Security', 'Users', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('USER_EDIT', 'Editar Usuarios', 'Permite modificar usuarios existentes', 'Security', 'Users', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('USER_DELETE', 'Eliminar Usuarios', 'Permite eliminar usuarios', 'Security', 'Users', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('USER_MANAGE_ROLES', 'Gestionar Roles de Usuario', 'Permite asignar/remover roles a usuarios', 'Security', 'Users', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	('ROLE_VIEW', 'Ver Roles', 'Permite visualizar roles del sistema', 'Security', 'Roles', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('ROLE_CREATE', 'Crear Roles', 'Permite crear nuevos roles', 'Security', 'Roles', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('ROLE_EDIT', 'Editar Roles', 'Permite modificar roles existentes', 'Security', 'Roles', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('ROLE_DELETE', 'Eliminar Roles', 'Permite eliminar roles', 'Security', 'Roles', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('ROLE_MANAGE_PERMISSIONS', 'Gestionar Permisos de Rol', 'Permite asignar/remover permisos a roles', 'Security', 'Roles', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	('PERMISSION_VIEW', 'Ver Permisos', 'Permite visualizar permisos del sistema', 'Security', 'Permissions', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('PERMISSION_MANAGE', 'Gestionar Permisos', 'Permite crear/editar permisos (solo admin)', 'Security', 'Permissions', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	('AUDIT_VIEW', 'Ver Logs de Auditoría', 'Permite visualizar logs de auditoría', 'Security', 'Audit', 'Report', 1, 1, 'SYSTEM_SEED'),
+	('AUDIT_EXPORT', 'Exportar Auditoría', 'Permite exportar logs de auditoría', 'Security', 'Audit', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	-- ===== Módulo: Master Data =====
+	('COMPANY_VIEW', 'Ver Empresas', 'Permite visualizar empresas', 'Master', 'Company', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('COMPANY_CREATE', 'Crear Empresas', 'Permite crear nuevas empresas', 'Master', 'Company', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('COMPANY_EDIT', 'Editar Empresas', 'Permite modificar empresas', 'Master', 'Company', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	('ESTABLISHMENT_VIEW', 'Ver Establecimientos', 'Permite visualizar establecimientos', 'Master', 'Establishment', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('ESTABLISHMENT_CREATE', 'Crear Establecimientos', 'Permite crear establecimientos', 'Master', 'Establishment', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('ESTABLISHMENT_EDIT', 'Editar Establecimientos', 'Permite modificar establecimientos', 'Master', 'Establishment', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	-- ===== Módulo: Billing =====
+	('INVOICE_VIEW', 'Ver Facturas', 'Permite visualizar facturas', 'Billing', 'Documents', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('INVOICE_CREATE', 'Crear Facturas', 'Permite crear facturas', 'Billing', 'Documents', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('INVOICE_EDIT', 'Editar Facturas', 'Permite modificar facturas', 'Billing', 'Documents', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('INVOICE_CANCEL', 'Anular Facturas', 'Permite anular facturas', 'Billing', 'Documents', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('INVOICE_APPROVE', 'Aprobar Facturas', 'Permite aprobar facturas (supervisor)', 'Billing', 'Documents', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	('SERIES_VIEW', 'Ver Series', 'Permite visualizar series documentarias', 'Billing', 'Series', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('SERIES_MANAGE', 'Gestionar Series', 'Permite crear/editar series', 'Billing', 'Series', 'Action', 1, 1, 'SYSTEM_SEED'),
+
+	-- ===== Módulo: Reports =====
+	('REPORT_SALES', 'Reporte de Ventas', 'Permite acceder a reportes de ventas', 'Reports', 'Sales', 'Report', 1, 1, 'SYSTEM_SEED'),
+	('REPORT_FINANCIAL', 'Reportes Financieros', 'Permite acceder a reportes financieros', 'Reports', 'Financial', 'Report', 1, 1, 'SYSTEM_SEED'),
+	('REPORT_AUDIT', 'Reportes de Auditoría', 'Permite acceder a reportes de auditoría', 'Reports', 'Audit', 'Report', 1, 1, 'SYSTEM_SEED'),
+
+	-- ===== Módulo: Configuration =====
+	('CONFIG_VIEW', 'Ver Configuración', 'Permite ver configuraciones del sistema', 'Configuration', 'System', 'Entity', 1, 1, 'SYSTEM_SEED'),
+	('CONFIG_EDIT', 'Editar Configuración', 'Permite modificar configuraciones', 'Configuration', 'System', 'Action', 1, 1, 'SYSTEM_SEED'),
+	('CONFIG_ADVANCED', 'Configuración Avanzada', 'Acceso a configuraciones avanzadas', 'Configuration', 'System', 'Action', 1, 1, 'SYSTEM_SEED');
+
+
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[Permissions] ya existe.';
+END;
+GO
+
+
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'RolePermissions' AND schema_id = SCHEMA_ID('security'))
+BEGIN
+	CREATE TABLE [security].[RolePermissions]
+	(
+		RoleId INT NOT NULL,
+		PermissionId INT NOT NULL,
+		AssignedOn DATETIME2(0) NOT NULL,
+		AssignedBy NVARCHAR(50),
+		IsActive BIT NOT NULL DEFAULT 1,
+		CONSTRAINT PK_RolePermissions PRIMARY KEY (RoleId, PermissionId),
+		CONSTRAINT FK_RolePermissions_Roles 
+			FOREIGN KEY (RoleId) REFERENCES [security].[Roles](RoleId),
+		CONSTRAINT FK_RolePermissions_Permissions 
+			FOREIGN KEY (PermissionId) REFERENCES [security].[Permissions](PermissionId)
+	);
+
+	CREATE INDEX IX_RolePermissions_Role_Active 
+		ON [security].[RolePermissions](RoleId) 
+		WHERE IsActive = 1;
+
+	CREATE INDEX IX_RolePermissions_Permission_Active 
+		ON [security].[RolePermissions](PermissionId) 
+		WHERE IsActive = 1;
+
+    PRINT '>> Tabla [master].[RolePermissions] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> Tabla [master].[RolePermissions] ya existe.';
+END;
+GO
 
 -- =============================================
 -- TABLA: SecurityLogs
