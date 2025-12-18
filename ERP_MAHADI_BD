@@ -368,7 +368,11 @@ BEGIN
         -- Autenticación segura
         [PasswordHash]          VARBINARY(256) NOT NULL,
         [PasswordSalt]          VARBINARY(128) NOT NULL,
-        
+
+	[HashAlgorithm] VARCHAR(50) NULL,
+	[HashVersion] INT NULL,
+	[PasswordChangedDate] DATETIME2(7) NULL,
+	[PasswordExpiryDate] DATETIME2(7) NULL,        
         -- Estado y bloqueos
         [StatusCode]            CHAR(1) NOT NULL DEFAULT 'A', -- A=Activo, I=Inactivo, B=Bloqueado
         [IsSystem]              BIT NOT NULL DEFAULT 0,
@@ -393,6 +397,10 @@ BEGIN
         [ModifiedBy]            VARCHAR(50) NULL,
         [Version]               ROWVERSION NOT NULL
     )ON [PRIMARY];
+    CREATE INDEX [IX_Users_PasswordExpiry] 
+        ON [security].[Users]([PasswordExpiryDate])
+        WHERE [PasswordExpiryDate] IS NOT NULL;
+
     PRINT '>> Tabla [security].[Users] creada.';
 END
 ELSE
