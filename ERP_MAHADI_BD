@@ -360,10 +360,34 @@ BEGIN
     CREATE TABLE [security].[Users](
         [UserId]                INT IDENTITY(1,1) PRIMARY KEY,
         [UserGuid]              UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+        -- Identidad de cuenta
         [Username]              VARCHAR(50) NOT NULL UNIQUE,
         [Email]                 VARCHAR(100) NOT NULL UNIQUE,
-        [FirstName]             NVARCHAR(50) NOT NULL,
-        [LastName]              NVARCHAR(50) NOT NULL,
+        -- Nombres (nuevo esquema LATAM/global)
+        [GivenNames]            NVARCHAR(200) NOT NULL,   -- ej: "Juan Carlos"
+        [FirstSurname]          NVARCHAR(150) NOT NULL,       -- ej: "Pérez"
+        [SecondSurname]         NVARCHAR(150) NULL,       -- ej: "García"
+        [SurnameFirst]          BIT NOT NULL CONSTRAINT DF_Users_SurnameFirst DEFAULT (0),
+
+        -- FullName calculado (respeta orden cultural) – SIN Suffix
+        [FullName] AS (
+            CASE 
+              WHEN [SurnameFirst] = 1 
+                THEN CONCAT_WS(
+                        N' ',
+                        NULLIF(LTRIM(RTRIM([FirstSurname])),  N''),
+                        NULLIF(LTRIM(RTRIM([SecondSurname])), N''),
+                        NULLIF(LTRIM(RTRIM([GivenNames])),    N'')
+                     )
+              ELSE CONCAT_WS(
+                        N' ',
+                        NULLIF(LTRIM(RTRIM([GivenNames])),    N''),
+                        NULLIF(LTRIM(RTRIM([FirstSurname])),  N''),
+                        NULLIF(LTRIM(RTRIM([SecondSurname])), N'')
+                     )
+            END
+        ) PERSISTED,
+
         
         -- Autenticación segura
         [PasswordHash]          VARBINARY(256) NOT NULL,
@@ -400,6 +424,15 @@ BEGIN
     CREATE INDEX [IX_Users_PasswordExpiry] 
         ON [security].[Users]([PasswordExpiryDate])
         WHERE [PasswordExpiryDate] IS NOT NULL;
+
+    -- Índice recomendado para búsquedas por nombre completo
+    CREATE INDEX [IX_Users_FullName] 
+        ON [security].Users;
+
+    -- Check para evitar cadenas vacías en GivenNames
+    ALTER TABLE [security].[Users]
+    ADD CONSTRAINT [CK_Users_GivenNames_NotEmpty]
+        CHECK (LTRIM(RTRIM([GivenNames])) <> N'');
 
     PRINT '>> Tabla [security].[Users] creada.';
 END
