@@ -1776,6 +1776,7 @@ BEGIN
     Id INT IDENTITY(1,1) PRIMARY KEY,
     Name NVARCHAR(100) NOT NULL,                    -- Nombre del proveedor: Claro, Win, Movistar, etc.
     ProviderType NVARCHAR(50) NOT NULL DEFAULT 'ISP', -- Tipo: ISP, VPN, Backup, Cloud
+IsPrimary bit not null default 0,
     BaseEndpoint NVARCHAR(500) NOT NULL,            -- Endpoint base o ruta del servidor
     BasePath NVARCHAR(500) NULL,                    -- Ruta base para archivos .bin (si aplica)
     DefaultPort INT NULL,                           -- Puerto por defecto
