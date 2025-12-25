@@ -1172,7 +1172,10 @@ BEGIN
         [CreatedBy]     VARCHAR(50)  NOT NULL DEFAULT 'SYSTEM',
         [CreatedOn] DATETIME2(0) NOT NULL DEFAULT GETUTCDATE(),
         [ModifiedBy]     VARCHAR(50) NULL,
-        [ModifiedOn] DATETIME2(0) NULL
+        [ModifiedOn] DATETIME2(0) NULL,
+	[AddressValidationStatus] [char](1) NOT NULL,
+	[ValidationDate] [datetime2](7) NULL,
+	[Version] [timestamp] NOT NULL
     );
     CREATE INDEX [IX_Addresses_CountryCity] 
         ON [master].[Addresses]([CountryCode], [City]);
