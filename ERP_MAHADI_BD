@@ -2363,4 +2363,1479 @@ GO
 
 
 
+-- ====================================================================
+-- CREAR SCHEMA ExternalServices en ERP_MAHADI
+-- Sistema de Gestión de APIs y Servicios Externos
+-- Version: 1.0.0
+-- Author: Sistema ERP MAHADI
+-- Created: 2024
+-- ====================================================================
 
+USE [ERP_MAHADI];
+GO
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+-- ====================================================================
+-- 1. CREAR SCHEMA ExternalServices
+-- ====================================================================
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'ExternalServices')
+BEGIN
+    EXEC('CREATE SCHEMA [ExternalServices] AUTHORIZATION [dbo]');
+    PRINT '✅ Schema [ExternalServices] creado exitosamente';
+END
+ELSE
+BEGIN
+    PRINT 'ℹ️ Schema [ExternalServices] ya existe';
+END
+GO
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    -- ====================================================================
+    -- 2. TABLA: ServiceProviders (Catálogo de proveedores de APIs)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ServiceProviders' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[ServiceProviders]
+        (
+            -- Identidad
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- Información del proveedor
+            [ProviderCode] NVARCHAR(50) NOT NULL,
+            [ProviderName] NVARCHAR(200) NOT NULL,
+            [ServiceType] NVARCHAR(50) NOT NULL, -- DocumentValidation, TaxValidation, SMS, Email, WhatsApp, etc.
+            [BaseUrl] NVARCHAR(500) NOT NULL,
+            [DocumentationUrl] NVARCHAR(500) NULL,
+            [HealthCheckEndpoint] NVARCHAR(200) NULL,
+            
+            -- Configuración operativa
+            [Priority] INT NOT NULL DEFAULT 1, -- Para failover (1=mayor prioridad)
+            [IsActive] BIT NOT NULL DEFAULT 1,
+            [RequiresAuthentication] BIT NOT NULL DEFAULT 1,
+            [AuthenticationType] NVARCHAR(30) NULL, -- API_KEY, OAUTH2, BEARER_TOKEN, BASIC
+            [CostPerCall] DECIMAL(10,4) NOT NULL DEFAULT 0.0000, -- Costo en soles
+            [AvgResponseTimeMs] INT NOT NULL DEFAULT 0,
+            [SuccessRate] DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+            [TimeoutMs] INT NOT NULL DEFAULT 30000, -- Timeout por defecto 30 segundos
+            [MaxRetryAttempts] INT NOT NULL DEFAULT 3,
+            
+            -- Estadísticas
+            [TotalCalls] BIGINT NOT NULL DEFAULT 0,
+            [SuccessfulCalls] BIGINT NOT NULL DEFAULT 0,
+            [FailedCalls] BIGINT NOT NULL DEFAULT 0,
+            [LastCallDate] DATETIME2 NULL,
+            
+            -- Configuración adicional (JSON)
+            [Configuration] NVARCHAR(MAX) NULL,
+            
+            -- Auditoría (heredada de BaseEntity)
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            [CreatedFromDevice] NVARCHAR(100) NULL,
+            [ModifiedFromDevice] NVARCHAR(100) NULL,
+            [Version] ROWVERSION NOT NULL,
+            
+            -- Constraints
+            CONSTRAINT [PK_ExternalServices_ServiceProviders] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            CONSTRAINT [UQ_ExternalServices_ServiceProviders_Guid] 
+                UNIQUE NONCLUSTERED ([Guid] ASC),
+            CONSTRAINT [UQ_ExternalServices_ServiceProviders_ProviderCode] 
+                UNIQUE NONCLUSTERED ([ProviderCode] ASC),
+            CONSTRAINT [CK_ExternalServices_ServiceProviders_Priority] 
+                CHECK ([Priority] BETWEEN 1 AND 10),
+            CONSTRAINT [CK_ExternalServices_ServiceProviders_SuccessRate] 
+                CHECK ([SuccessRate] BETWEEN 0.00 AND 100.00),
+            CONSTRAINT [CK_ExternalServices_ServiceProviders_Timeout] 
+                CHECK ([TimeoutMs] BETWEEN 1000 AND 300000) -- 1 segundo a 5 minutos
+        );
+
+        -- Índices optimizados
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ServiceProviders_ServiceType_Priority] 
+            ON [ExternalServices].[ServiceProviders] ([ServiceType], [Priority], [IsActive])
+            INCLUDE ([ProviderCode], [BaseUrl], [AvgResponseTimeMs], [SuccessRate]);
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ServiceProviders_IsActive] 
+            ON [ExternalServices].[ServiceProviders] ([IsActive]) 
+            INCLUDE ([ProviderCode], [Priority], [ServiceType], [SuccessRate]);
+
+        PRINT '✅ Tabla [ExternalServices].[ServiceProviders] creada';
+    END
+
+    -- ====================================================================
+    -- 3. TABLA: ApiConfigurations (Configuración por empresa)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ApiConfigurations' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[ApiConfigurations]
+        (
+            -- Identidad
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- Relaciones
+            [CompanyCodeId] INT NOT NULL DEFAULT 0, -- 0 = configuración global
+            [ServiceProviderId] INT NOT NULL,
+            
+            -- Configuración
+            [ConfigurationName] NVARCHAR(200) NOT NULL,
+            [IsActive] BIT NOT NULL DEFAULT 1,
+            [Priority] INT NOT NULL DEFAULT 1, -- Override del priority global
+            [Settings] NVARCHAR(MAX) NULL, -- JSON con configuración específica
+            [CustomHeaders] NVARCHAR(MAX) NULL, -- Headers personalizados en JSON
+            
+            -- Límites y quotas
+            [MonthlyCallLimit] INT NULL, -- NULL = sin límite
+            [CallsConsumedThisMonth] INT NOT NULL DEFAULT 0,
+            [DailyCallLimit] INT NULL,
+            [CallsConsumedToday] INT NOT NULL DEFAULT 0,
+            [ConcurrentCallLimit] INT NOT NULL DEFAULT 5,
+            
+            -- Circuit Breaker
+            [CircuitBreakerEnabled] BIT NOT NULL DEFAULT 1,
+            [FailureThreshold] INT NOT NULL DEFAULT 5,
+            [SuccessThreshold] INT NOT NULL DEFAULT 2,
+            [BreakDurationSeconds] INT NOT NULL DEFAULT 60,
+            
+            -- Vigencia
+            [ValidFrom] DATETIME2 NULL,
+            [ValidTo] DATETIME2 NULL,
+            [TimeZone] NVARCHAR(50) NULL DEFAULT 'SA Pacific Standard Time',
+            
+            -- Auditoría
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            [CreatedFromDevice] NVARCHAR(100) NULL,
+            [ModifiedFromDevice] NVARCHAR(100) NULL,
+            [Version] ROWVERSION NOT NULL,
+            
+            -- Constraints
+            CONSTRAINT [PK_ExternalServices_ApiConfigurations] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            CONSTRAINT [UQ_ExternalServices_ApiConfigurations_Guid] 
+                UNIQUE NONCLUSTERED ([Guid] ASC),
+            CONSTRAINT [FK_ExternalServices_ApiConfigurations_ServiceProvider] 
+                FOREIGN KEY ([ServiceProviderId]) 
+                REFERENCES [ExternalServices].[ServiceProviders]([Id])
+                ON DELETE CASCADE,
+            CONSTRAINT [FK_ExternalServices_ApiConfigurations_CompanyCode] 
+                FOREIGN KEY ([CompanyCodeId]) 
+                REFERENCES [master].[CompanyCodes]([CompanyCodeId])
+                ON DELETE CASCADE,
+            CONSTRAINT [CK_ExternalServices_ApiConfigurations_Priority] 
+                CHECK ([Priority] BETWEEN 1 AND 10),
+            CONSTRAINT [CK_ExternalServices_ApiConfigurations_Limits] 
+                CHECK ([MonthlyCallLimit] IS NULL OR [MonthlyCallLimit] >= 0),
+            CONSTRAINT [CK_ExternalServices_ApiConfigurations_Dates] 
+                CHECK ([ValidFrom] IS NULL OR [ValidTo] IS NULL OR [ValidFrom] <= [ValidTo])
+        );
+
+        -- Índices optimizados
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiConfigurations_CompanyCode_Active] 
+            ON [ExternalServices].[ApiConfigurations] ([CompanyCodeId], [IsActive], [ValidTo])
+            INCLUDE ([ServiceProviderId], [Priority], [ConfigurationName]);
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiConfigurations_ServiceProvider_Priority] 
+            ON [ExternalServices].[ApiConfigurations] ([ServiceProviderId], [Priority], [IsActive])
+            INCLUDE ([CompanyCodeId], [ConfigurationName]);
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiConfigurations_Validity] 
+            ON [ExternalServices].[ApiConfigurations] ([ValidFrom], [ValidTo])
+            WHERE [IsActive] = 1;
+
+        PRINT '✅ Tabla [ExternalServices].[ApiConfigurations] creada';
+    END
+
+    -- ====================================================================
+    -- 4. TABLA: ApiTokens (Tokens/credenciales por configuración)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ApiTokens' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[ApiTokens]
+        (
+            -- Identidad
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- Relación
+            [ApiConfigurationId] INT NOT NULL,
+            
+            -- Credenciales (ENCRIPTADAS en aplicación)
+            [Email] NVARCHAR(100) NULL,
+            [ApiKey] NVARCHAR(500) NULL, -- ⚠️ DEBE ESTAR ENCRIPTADO
+            [SecretKey] NVARCHAR(500) NULL, -- ⚠️ DEBE ESTAR ENCRIPTADO
+            [AccessToken] NVARCHAR(2000) NULL, -- ⚠️ DEBE ESTAR ENCRIPTADO
+            [RefreshToken] NVARCHAR(2000) NULL, -- ⚠️ DEBE ESTAR ENCRIPTADO
+            [TokenExpiresAt] DATETIME2 NULL,
+            
+            -- Créditos y consumo
+            [AvailableCredits] INT NOT NULL DEFAULT 0,
+            [TotalConsumed] INT NOT NULL DEFAULT 0,
+            [CreditsAlertThreshold] INT NOT NULL DEFAULT 10,
+            
+            -- Vigencia
+            [ValidFrom] DATETIME2 NULL,
+            [ValidTo] DATETIME2 NULL,
+            [IsActive] BIT NOT NULL DEFAULT 1,
+            [IsLicensed] BIT NOT NULL DEFAULT 0, -- True = licencia comercial, False = prueba
+            [AutoRenew] BIT NOT NULL DEFAULT 0,
+            
+            -- Recargas
+            [LastRechargeDate] DATETIME2 NULL,
+            [LastRechargeAmount] INT NULL,
+            [RechargeCost] DECIMAL(10,2) NULL,
+            [NextRechargeDate] DATETIME2 NULL,
+            
+            -- Auditoría
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            [CreatedFromDevice] NVARCHAR(100) NULL,
+            [ModifiedFromDevice] NVARCHAR(100) NULL,
+            [Version] ROWVERSION NOT NULL,
+            
+            -- Constraints
+            CONSTRAINT [PK_ExternalServices_ApiTokens] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            CONSTRAINT [UQ_ExternalServices_ApiTokens_Guid] 
+                UNIQUE NONCLUSTERED ([Guid] ASC),
+            CONSTRAINT [FK_ExternalServices_ApiTokens_ApiConfiguration] 
+                FOREIGN KEY ([ApiConfigurationId]) 
+                REFERENCES [ExternalServices].[ApiConfigurations]([Id])
+                ON DELETE CASCADE,
+            CONSTRAINT [CK_ExternalServices_ApiTokens_Credits] 
+                CHECK ([AvailableCredits] >= 0 AND [TotalConsumed] >= 0),
+            CONSTRAINT [CK_ExternalServices_ApiTokens_Dates] 
+                CHECK ([ValidFrom] IS NULL OR [ValidTo] IS NULL OR [ValidFrom] <= [ValidTo])
+        );
+
+        -- Índices optimizados
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiTokens_Configuration_Active] 
+            ON [ExternalServices].[ApiTokens] ([ApiConfigurationId], [IsActive], [ValidTo])
+            INCLUDE ([AvailableCredits], [Email], [IsLicensed]);
+
+        PRINT '✅ Tabla [ExternalServices].[ApiTokens] creada';
+    END
+
+    -- ====================================================================
+    -- 5. TABLA: RateLimits (Control de límites de tasa por proveedor)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'RateLimits' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[RateLimits]
+        (
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            [ServiceProviderId] INT NOT NULL,
+            [TimeWindow] NVARCHAR(20) NOT NULL, -- SECOND, MINUTE, HOUR, DAY, MONTH
+            [MaxCalls] INT NOT NULL,
+            [IsActive] BIT NOT NULL DEFAULT 1,
+            [Description] NVARCHAR(200) NULL,
+            
+            -- Auditoría
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            
+            CONSTRAINT [PK_ExternalServices_RateLimits] PRIMARY KEY ([Id]),
+            CONSTRAINT [UQ_ExternalServices_RateLimits_Guid] UNIQUE ([Guid]),
+            CONSTRAINT [FK_ExternalServices_RateLimits_ServiceProvider] 
+                FOREIGN KEY ([ServiceProviderId]) 
+                REFERENCES [ExternalServices].[ServiceProviders]([Id])
+                ON DELETE CASCADE,
+            CONSTRAINT [CK_ExternalServices_RateLimits_TimeWindow] 
+                CHECK ([TimeWindow] IN ('SECOND', 'MINUTE', 'HOUR', 'DAY', 'MONTH')),
+            CONSTRAINT [CK_ExternalServices_RateLimits_MaxCalls] 
+                CHECK ([MaxCalls] > 0)
+        );
+        
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_RateLimits_ServiceProvider] 
+            ON [ExternalServices].[RateLimits]([ServiceProviderId], [IsActive], [TimeWindow]);
+        
+        PRINT '✅ Tabla [ExternalServices].[RateLimits] creada';
+    END
+
+    -- ====================================================================
+    -- 6. TABLA: CircuitBreakerState (Estado del Circuit Breaker)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'CircuitBreakerState' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[CircuitBreakerState]
+        (
+            [ServiceProviderId] INT NOT NULL,
+            [CompanyCodeId] INT NOT NULL DEFAULT 0,
+            [State] NVARCHAR(20) NOT NULL DEFAULT 'Closed', -- Closed, Open, HalfOpen
+            [FailureCount] INT NOT NULL DEFAULT 0,
+            [LastFailure] DATETIME2 NULL,
+            [OpenedAt] DATETIME2 NULL,
+            [NextAttempt] DATETIME2 NULL,
+            [ConsecutiveSuccesses] INT NOT NULL DEFAULT 0,
+            [ModifiedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            
+            CONSTRAINT [PK_ExternalServices_CircuitBreakerState] 
+                PRIMARY KEY ([ServiceProviderId], [CompanyCodeId]),
+            CONSTRAINT [FK_ExternalServices_CircuitBreakerState_ServiceProvider] 
+                FOREIGN KEY ([ServiceProviderId]) 
+                REFERENCES [ExternalServices].[ServiceProviders]([Id])
+                ON DELETE CASCADE,
+            CONSTRAINT [CK_ExternalServices_CircuitBreakerState_State] 
+                CHECK ([State] IN ('Closed', 'Open', 'HalfOpen'))
+        );
+        
+        PRINT '✅ Tabla [ExternalServices].[CircuitBreakerState] creada';
+    END
+
+    -- ====================================================================
+    -- 7. TABLA: ApiCallLogs (Registro de llamadas a APIs - TABLA DE HECHOS)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ApiCallLogs' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[ApiCallLogs]
+        (
+            -- Identidad
+            [Id] BIGINT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- Relaciones
+            [ApiConfigurationId] INT NOT NULL,
+            [ApiTokenId] INT NULL,
+            
+            -- Detalles de la llamada
+            [Endpoint] NVARCHAR(500) NOT NULL,
+            [HttpMethod] NVARCHAR(10) NOT NULL, -- GET, POST, PUT, DELETE, PATCH
+            [RequestParameters] NVARCHAR(MAX) NULL, -- JSON
+            [ResponseData] NVARCHAR(MAX) NULL, -- JSON (puede ser muy grande)
+            [HttpStatusCode] INT NOT NULL,
+            [StatusDescription] NVARCHAR(100) NULL,
+            
+            -- Resultado
+            [IsSuccess] BIT NOT NULL,
+            [ErrorMessage] NVARCHAR(1000) NULL,
+            [ErrorCode] NVARCHAR(50) NULL,
+            [ResponseTimeMs] INT NOT NULL,
+            [RetryCount] INT NOT NULL DEFAULT 0,
+            
+            -- Costos
+            [CreditConsumed] BIT NOT NULL DEFAULT 0,
+            [Cost] DECIMAL(10,4) NOT NULL DEFAULT 0.0000,
+            
+            -- Contexto
+            [UserId] INT NULL,
+            [CompanyCodeId] INT NULL,
+            [SessionId] UNIQUEIDENTIFIER NULL,
+            [ClientIp] NVARCHAR(45) NULL,
+            [UserAgent] NVARCHAR(500) NULL,
+            [CorrelationId] UNIQUEIDENTIFIER NULL,
+            
+            -- Timestamp
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [CreatedFromDevice] NVARCHAR(100) NULL,
+            
+            -- Constraints
+            CONSTRAINT [PK_ExternalServices_ApiCallLogs] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            CONSTRAINT [FK_ExternalServices_ApiCallLogs_ApiConfiguration] 
+                FOREIGN KEY ([ApiConfigurationId]) 
+                REFERENCES [ExternalServices].[ApiConfigurations]([Id]),
+            CONSTRAINT [FK_ExternalServices_ApiCallLogs_ApiToken] 
+                FOREIGN KEY ([ApiTokenId]) 
+                REFERENCES [ExternalServices].[ApiTokens]([Id]),
+            CONSTRAINT [CK_ExternalServices_ApiCallLogs_HttpStatusCode] 
+                CHECK ([HttpStatusCode] BETWEEN 100 AND 599),
+            CONSTRAINT [CK_ExternalServices_ApiCallLogs_ResponseTime] 
+                CHECK ([ResponseTimeMs] >= 0 AND [ResponseTimeMs] <= 300000)
+        );
+
+        -- Índices optimizados para consultas de reportes
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiCallLogs_Company_Date] 
+            ON [ExternalServices].[ApiCallLogs] ([CompanyCodeId], [CreatedOn] DESC)
+            INCLUDE ([ApiConfigurationId], [IsSuccess], [HttpStatusCode], [ResponseTimeMs]);
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ApiCallLogs_Configuration_Date] 
+            ON [ExternalServices].[ApiCallLogs] ([ApiConfigurationId], [CreatedOn] DESC)
+            INCLUDE ([IsSuccess], [HttpStatusCode], [ResponseTimeMs], [CompanyCodeId]);
+
+        PRINT '✅ Tabla [ExternalServices].[ApiCallLogs] creada';
+    END
+
+    -- ====================================================================
+    -- 8. TABLA: DocumentValidations (Histórico de validaciones DNI/RUC)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'DocumentValidations' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[DocumentValidations]
+        (
+            -- Identidad
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- Documento
+            [DocumentType] NVARCHAR(10) NOT NULL, -- DNI, RUC, CE, PASSPORT
+            [DocumentNumber] NVARCHAR(20) NOT NULL,
+            
+            -- Datos del documento (para DNI)
+            [FirstLastName] NVARCHAR(100) NULL,
+            [SecondLastName] NVARCHAR(100) NULL,
+            [FirstNames] NVARCHAR(100) NULL,
+            [FullName] NVARCHAR(200) NULL,
+            
+            -- Datos del documento (para RUC)
+            [BusinessName] NVARCHAR(300) NULL,
+            [TradeName] NVARCHAR(300) NULL,
+            [Status] NVARCHAR(50) NULL,
+            [Condition] NVARCHAR(50) NULL,
+            [Address] NVARCHAR(500) NULL,
+            [EconomicActivity] NVARCHAR(200) NULL,
+            
+            -- Ubicación
+            [UbigeoCode] CHAR(6) NULL,
+            [Department] NVARCHAR(100) NULL,
+            [Province] NVARCHAR(100) NULL,
+            [District] NVARCHAR(100) NULL,
+            
+            -- Validación
+            [ValidationProvider] NVARCHAR(50) NOT NULL,
+            [ApiTokenId] INT NULL,
+            [ValidationDate] DATETIME2 NOT NULL,
+            [IsValid] BIT NOT NULL,
+            [ConfidenceScore] DECIMAL(5,2) NULL, -- Porcentaje de confianza
+            [ErrorMessage] NVARCHAR(500) NULL,
+            
+            -- Caché
+            [IsCached] BIT NOT NULL DEFAULT 0,
+            [CacheExpiryDate] DATETIME2 NULL,
+            
+            -- Datos adicionales (JSON)
+            [AdditionalData] NVARCHAR(MAX) NULL,
+            
+            -- Auditoría
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            [CreatedFromDevice] NVARCHAR(100) NULL,
+            [ModifiedFromDevice] NVARCHAR(100) NULL,
+            [Version] ROWVERSION NOT NULL,
+            
+            -- Constraints
+            CONSTRAINT [PK_ExternalServices_DocumentValidations] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            CONSTRAINT [UQ_ExternalServices_DocumentValidations_Guid] 
+                UNIQUE NONCLUSTERED ([Guid] ASC),
+            CONSTRAINT [CK_ExternalServices_DocumentValidations_DocumentType] 
+                CHECK ([DocumentType] IN ('DNI', 'RUC', 'CE', 'PASSPORT')),
+            CONSTRAINT [CK_ExternalServices_DocumentValidations_ConfidenceScore] 
+                CHECK ([ConfidenceScore] IS NULL OR ([ConfidenceScore] BETWEEN 0.00 AND 100.00))
+        );
+
+        -- Índices optimizados para búsqueda y caché
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_DocumentValidations_Document_Date] 
+            ON [ExternalServices].[DocumentValidations] ([DocumentType], [DocumentNumber], [ValidationDate] DESC)
+            INCLUDE ([IsValid], [FullName], [BusinessName], [ConfidenceScore]);
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_DocumentValidations_ValidationDate] 
+            ON [ExternalServices].[DocumentValidations] ([ValidationDate] DESC)
+            INCLUDE ([DocumentType], [DocumentNumber], [IsValid], [ValidationProvider]);
+
+        PRINT '✅ Tabla [ExternalServices].[DocumentValidations] creada';
+    END
+
+    -- ====================================================================
+    -- 9. TABLA: Ubigeos (Catálogo de códigos INEI - Datos maestros)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Ubigeos' AND SCHEMA_NAME(schema_id) = 'master')
+    BEGIN
+        CREATE TABLE [master].[Ubigeos]
+        (
+            -- Identidad
+            [Id] INT IDENTITY(1,1) NOT NULL,
+            [Guid] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() ROWGUIDCOL,
+            
+            -- CÓDIGOS DE UBIGEO (AMBOS SISTEMAS)
+            [CodeSunat] CHAR(6) NOT NULL,           -- Código SUNAT (Facturación)
+            [CodeReniec] CHAR(6) NOT NULL,          -- Código INEI/RENIEC (Oficial)
+            
+            -- DESCOMPOSICIÓN DE CÓDIGOS PARA BÚSQUEDA EFICIENTE
+            [DepartmentCodeSunat] AS CAST(SUBSTRING([CodeSunat], 1, 2) AS CHAR(2)) PERSISTED,
+            [ProvinceCodeSunat] AS CAST(SUBSTRING([CodeSunat], 3, 2) AS CHAR(2)) PERSISTED,
+            [DistrictCodeSunat] AS CAST(SUBSTRING([CodeSunat], 5, 2) AS CHAR(2)) PERSISTED,
+            
+            [DepartmentCodeReniec] AS CAST(SUBSTRING([CodeReniec], 1, 2) AS CHAR(2)) PERSISTED,
+            [ProvinceCodeReniec] AS CAST(SUBSTRING([CodeReniec], 3, 2) AS CHAR(2)) PERSISTED,
+            [DistrictCodeReniec] AS CAST(SUBSTRING([CodeReniec], 5, 2) AS CHAR(2)) PERSISTED,
+            
+            -- JERARQUÍA ADMINISTRATIVA (NOMBRES)
+            [Region] NVARCHAR(100) NULL,            -- Macroregión (ej: Costa, Sierra, Selva)
+            [Department] NVARCHAR(100) NOT NULL,
+            [Province] NVARCHAR(100) NOT NULL,
+            [District] NVARCHAR(100) NOT NULL,
+            
+            -- NOMBRES ALTERNATIVOS/COMPLETOS
+            [FullName] AS ([Department] + ' - ' + [Province] + ' - ' + [District]),
+            [ShortName] NVARCHAR(150) NULL,         -- Para UI/búsquedas rápidas
+            [AlternativeName] NVARCHAR(200) NULL,   -- Nombres históricos/alternativos
+            
+            -- TIPO DE UBIGEO
+            [UbigeoType] NVARCHAR(30) NOT NULL DEFAULT 'DISTRICT', -- DEPARTMENT, PROVINCE, DISTRICT
+            [Category] NVARCHAR(50) NULL,           -- URBANO, RURAL, METROPOLITANO, FRONTERIZO
+            [IsCapital] BIT NOT NULL DEFAULT 0,     -- Capital de departamento/provincia
+            
+            -- GEOREFERENCIACIÓN
+            [Latitude] DECIMAL(9,6) NULL,           -- -90.000000 a +90.000000
+            [Longitude] DECIMAL(9,6) NULL,          -- -180.000000 a +180.000000
+            [Altitude] DECIMAL(7,2) NULL,           -- Metros sobre el nivel del mar
+            [TimeZone] NVARCHAR(50) NULL DEFAULT 'SA Pacific Standard Time',
+            
+            -- ESTADÍSTICAS (INEI)
+            [Population] INT NULL,
+            [AreaKm2] DECIMAL(10,2) NULL,
+            [Density] AS (CASE WHEN [AreaKm2] > 0 
+                THEN CAST([Population] AS DECIMAL(18,2)) / [AreaKm2] 
+                ELSE NULL END),
+            [UrbanPercentage] DECIMAL(5,2) NULL,    -- % población urbana
+            [LastCensusYear] INT NULL,              -- Año del último censo
+            
+            -- INFORMACIÓN ECONÓMICA
+            [PovertyIndex] DECIMAL(5,2) NULL,       -- Índice de pobreza
+            [DevelopmentIndex] DECIMAL(5,2) NULL,    -- Índice de desarrollo
+            [MainEconomicActivity] NVARCHAR(200) NULL,
+            
+            -- ESTADO Y VIGENCIA
+            [IsActive] BIT NOT NULL DEFAULT 1,
+            [SunatActive] BIT NOT NULL DEFAULT 1,   -- Vigente en SUNAT
+            [ReniecActive] BIT NOT NULL DEFAULT 1,   -- Vigente en RENIEC
+            [ValidFrom] DATE NULL,                  -- Fecha de vigencia
+            [ValidTo] DATE NULL,                    -- Fecha de caducidad
+            
+            -- MAPPING ENTRE SISTEMAS
+            [CodesMatch] AS (CASE WHEN [CodeSunat] = [CodeReniec] THEN 1 ELSE 0 END) PERSISTED,
+            [MappingNotes] NVARCHAR(500) NULL,      -- Notas sobre diferencias entre códigos
+            
+            -- AUDITORÍA COMPLETA
+            [CreatedBy] NVARCHAR(100) NULL,
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            [ModifiedBy] NVARCHAR(100) NULL,
+            [ModifiedOn] DATETIME2 NULL,
+            [ModifiedReason] NVARCHAR(200) NULL,    -- Razón del cambio
+            [Version] ROWVERSION NOT NULL,
+            
+            -- CONSTRAINTS
+            CONSTRAINT [PK_master_Ubigeos] 
+                PRIMARY KEY CLUSTERED ([Id] ASC),
+            
+            -- Unicidad por sistema
+            CONSTRAINT [UQ_master_Ubigeos_CodeSunat] 
+                UNIQUE NONCLUSTERED ([CodeSunat] ASC),
+            CONSTRAINT [UQ_master_Ubigeos_CodeReniec] 
+                UNIQUE NONCLUSTERED ([CodeReniec] ASC),
+            CONSTRAINT [UQ_master_Ubigeos_Guid] 
+                UNIQUE NONCLUSTERED ([Guid] ASC),
+            
+            -- Validación de formatos
+            CONSTRAINT [CK_master_Ubigeos_CodeSunat_Format] 
+                CHECK (LEN([CodeSunat]) = 6 AND [CodeSunat] NOT LIKE '%[^0-9]%'),
+            CONSTRAINT [CK_master_Ubigeos_CodeReniec_Format] 
+                CHECK (LEN([CodeReniec]) = 6 AND [CodeReniec] NOT LIKE '%[^0-9]%'),
+            
+            -- Validación de coordenadas
+            CONSTRAINT [CK_master_Ubigeos_Coordinates] 
+                CHECK (
+                    ([Latitude] IS NULL AND [Longitude] IS NULL) OR
+                    ([Latitude] BETWEEN -90 AND 90 AND [Longitude] BETWEEN -180 AND 180)
+                ),
+            
+            -- Validación de fechas
+            CONSTRAINT [CK_master_Ubigeos_Dates] 
+                CHECK ([ValidFrom] IS NULL OR [ValidTo] IS NULL OR [ValidFrom] <= [ValidTo]),
+            
+            -- Validación de porcentajes
+            CONSTRAINT [CK_master_Ubigeos_UrbanPercentage] 
+                CHECK ([UrbanPercentage] IS NULL OR ([UrbanPercentage] BETWEEN 0 AND 100)),
+            
+            -- Validación de tipo
+            CONSTRAINT [CK_master_Ubigeos_Type] 
+                CHECK ([UbigeoType] IN ('DEPARTMENT', 'PROVINCE', 'DISTRICT', 'REGION'))
+        );
+
+        -- Índices optimizados para diferentes casos de uso
+        CREATE NONCLUSTERED INDEX [IX_master_Ubigeos_Sunat] 
+            ON [master].[Ubigeos] ([CodeSunat], [IsActive], [SunatActive])
+            INCLUDE ([Department], [Province], [District], [FullName]);
+
+        CREATE NONCLUSTERED INDEX [IX_master_Ubigeos_Reniec] 
+            ON [master].[Ubigeos] ([CodeReniec], [IsActive], [ReniecActive])
+            INCLUDE ([Department], [Province], [District], [FullName]);
+
+        CREATE NONCLUSTERED INDEX [IX_master_Ubigeos_Hierarchy] 
+            ON [master].[Ubigeos] ([Department], [Province], [District], [IsActive])
+            INCLUDE ([CodeSunat], [CodeReniec], [FullName], [UbigeoType]);
+
+        PRINT '✅ Tabla [master].[Ubigeos] creada con soporte para SUNAT y RENIEC';
+    END
+
+    -- ====================================================================
+    -- 10. TABLA: ServiceHealthMetrics (Métricas de salud de servicios)
+    -- ====================================================================
+    IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'ServiceHealthMetrics' AND SCHEMA_NAME(schema_id) = 'ExternalServices')
+    BEGIN
+        CREATE TABLE [ExternalServices].[ServiceHealthMetrics]
+        (
+            [Id] BIGINT IDENTITY(1,1) NOT NULL,
+            [ServiceProviderId] INT NOT NULL,
+            [MetricDate] DATE NOT NULL,
+            [HourOfDay] TINYINT NOT NULL,
+            [TotalCalls] INT NOT NULL DEFAULT 0,
+            [SuccessfulCalls] INT NOT NULL DEFAULT 0,
+            [FailedCalls] INT NOT NULL DEFAULT 0,
+            [TotalResponseTimeMs] BIGINT NOT NULL DEFAULT 0,
+            [MinResponseTimeMs] INT NULL,
+            [MaxResponseTimeMs] INT NULL,
+            [AvgResponseTimeMs] AS (CASE WHEN [TotalCalls] > 0 
+                THEN [TotalResponseTimeMs] / [TotalCalls] 
+                ELSE 0 END),
+            [SuccessRate] AS (CASE WHEN [TotalCalls] > 0 
+                THEN CAST([SuccessfulCalls] AS DECIMAL(10,2)) / [TotalCalls] * 100 
+                ELSE 100.00 END),
+            [CreatedOn] DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+            
+            CONSTRAINT [PK_ExternalServices_ServiceHealthMetrics] 
+                PRIMARY KEY CLUSTERED ([ServiceProviderId], [MetricDate], [HourOfDay]),
+            CONSTRAINT [FK_ExternalServices_ServiceHealthMetrics_ServiceProvider] 
+                FOREIGN KEY ([ServiceProviderId]) 
+                REFERENCES [ExternalServices].[ServiceProviders]([Id])
+                ON DELETE CASCADE,
+            CONSTRAINT [CK_ExternalServices_ServiceHealthMetrics_Hour] 
+                CHECK ([HourOfDay] BETWEEN 0 AND 23)
+        );
+
+        CREATE NONCLUSTERED INDEX [IX_ExternalServices_ServiceHealthMetrics_Date] 
+            ON [ExternalServices].[ServiceHealthMetrics] ([MetricDate] DESC)
+            INCLUDE ([ServiceProviderId], [SuccessRate], [AvgResponseTimeMs]);
+
+        PRINT '✅ Tabla [ExternalServices].[ServiceHealthMetrics] creada';
+    END
+
+    COMMIT TRANSACTION;
+
+    PRINT '';
+    PRINT '✅ Todas las tablas creadas exitosamente';
+    PRINT '';
+
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+    DECLARE @ErrorState INT = ERROR_STATE();
+    DECLARE @ErrorProcedure NVARCHAR(200) = ERROR_PROCEDURE();
+    DECLARE @ErrorLine INT = ERROR_LINE();
+
+    PRINT '❌ ERROR durante la creación de tablas:';
+    PRINT '   Mensaje: ' + @ErrorMessage;
+    PRINT '   Procedimiento: ' + ISNULL(@ErrorProcedure, 'N/A');
+    PRINT '   Línea: ' + CAST(@ErrorLine AS NVARCHAR);
+    PRINT '   Severidad: ' + CAST(@ErrorSeverity AS NVARCHAR);
+    PRINT '   Estado: ' + CAST(@ErrorState AS NVARCHAR);
+
+    THROW;
+END CATCH;
+GO
+
+-- ====================================================================
+-- 11. PROCEDIMIENTOS ALMACENADOS CRÍTICOS
+-- ====================================================================
+
+-- Procedimiento para registrar llamadas a API
+IF OBJECT_ID('[ExternalServices].[usp_LogApiCall]', 'P') IS NOT NULL
+    DROP PROCEDURE [ExternalServices].[usp_LogApiCall];
+GO
+
+CREATE PROCEDURE [ExternalServices].[usp_LogApiCall]
+    @ApiConfigurationId INT,
+    @ApiTokenId INT = NULL,
+    @Endpoint NVARCHAR(500),
+    @HttpMethod NVARCHAR(10),
+    @HttpStatusCode INT,
+    @IsSuccess BIT,
+    @ResponseTimeMs INT,
+    @CompanyCodeId INT = NULL,
+    @UserId INT = NULL,
+    @RequestParameters NVARCHAR(MAX) = NULL,
+    @ResponseData NVARCHAR(MAX) = NULL,
+    @ErrorMessage NVARCHAR(1000) = NULL,
+    @ErrorCode NVARCHAR(50) = NULL,
+    @ClientIp NVARCHAR(45) = NULL,
+    @UserAgent NVARCHAR(500) = NULL,
+    @CorrelationId UNIQUEIDENTIFIER = NULL,
+    @RetryCount INT = 0,
+    @SessionId UNIQUEIDENTIFIER = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ServiceProviderId INT;
+    DECLARE @CostPerCall DECIMAL(10,4);
+    DECLARE @CreditConsumed BIT = 0;
+    DECLARE @LogId BIGINT;
+
+    BEGIN TRANSACTION;
+
+    -- Obtener información del proveedor
+    SELECT 
+        @ServiceProviderId = sp.Id,
+        @CostPerCall = sp.CostPerCall
+    FROM [ExternalServices].[ApiConfigurations] ac
+    INNER JOIN [ExternalServices].[ServiceProviders] sp ON ac.ServiceProviderId = sp.Id
+    WHERE ac.Id = @ApiConfigurationId;
+
+    IF @ServiceProviderId IS NULL
+    BEGIN
+        ROLLBACK TRANSACTION;
+        THROW 50001, 'Configuración de API no encontrada.', 1;
+        RETURN;
+    END
+
+    -- Determinar si se consume crédito
+    IF @IsSuccess = 1 AND @ApiTokenId IS NOT NULL
+    BEGIN
+        SET @CreditConsumed = 1;
+    END
+
+    -- Insertar log
+    INSERT INTO [ExternalServices].[ApiCallLogs] (
+        [ApiConfigurationId], [ApiTokenId], [Endpoint], [HttpMethod],
+        [HttpStatusCode], [IsSuccess], [ResponseTimeMs], [CompanyCodeId],
+        [UserId], [RequestParameters], [ResponseData], [ErrorMessage],
+        [ErrorCode], [CreditConsumed], [Cost], [ClientIp], [UserAgent],
+        [CorrelationId], [RetryCount], [SessionId], [CreatedOn]
+    )
+    VALUES (
+        @ApiConfigurationId, @ApiTokenId, @Endpoint, @HttpMethod,
+        @HttpStatusCode, @IsSuccess, @ResponseTimeMs, @CompanyCodeId,
+        @UserId, @RequestParameters, LEFT(@ResponseData, 4000), @ErrorMessage,
+        @ErrorCode, @CreditConsumed, @CostPerCall, @ClientIp, @UserAgent,
+        @CorrelationId, @RetryCount, @SessionId, GETUTCDATE()
+    );
+
+    SET @LogId = SCOPE_IDENTITY();
+
+    -- Actualizar créditos del token si se consumió
+    IF @CreditConsumed = 1 AND @ApiTokenId IS NOT NULL
+    BEGIN
+        UPDATE [ExternalServices].[ApiTokens]
+        SET 
+            [AvailableCredits] = [AvailableCredits] - 1,
+            [TotalConsumed] = [TotalConsumed] + 1,
+            [ModifiedOn] = GETUTCDATE()
+        WHERE [Id] = @ApiTokenId;
+    END
+
+    -- Actualizar estadísticas del proveedor
+    UPDATE [ExternalServices].[ServiceProviders]
+    SET 
+        [TotalCalls] = [TotalCalls] + 1,
+        [SuccessfulCalls] = [SuccessfulCalls] + CASE WHEN @IsSuccess = 1 THEN 1 ELSE 0 END,
+        [FailedCalls] = [FailedCalls] + CASE WHEN @IsSuccess = 0 THEN 1 ELSE 0 END,
+        [AvgResponseTimeMs] = CASE 
+            WHEN [AvgResponseTimeMs] = 0 THEN @ResponseTimeMs
+            ELSE ([AvgResponseTimeMs] + @ResponseTimeMs) / 2
+        END,
+        [LastCallDate] = GETUTCDATE(),
+        [ModifiedOn] = GETUTCDATE()
+    WHERE [Id] = @ServiceProviderId;
+
+    -- Actualizar métricas de salud por hora
+    MERGE [ExternalServices].[ServiceHealthMetrics] AS target
+    USING (VALUES (
+        @ServiceProviderId,
+        CAST(GETUTCDATE() AS DATE),
+        DATEPART(HOUR, GETUTCDATE())
+    )) AS source (ServiceProviderId, MetricDate, HourOfDay)
+    ON target.ServiceProviderId = source.ServiceProviderId
+        AND target.MetricDate = source.MetricDate
+        AND target.HourOfDay = source.HourOfDay
+    WHEN MATCHED THEN
+        UPDATE SET
+            [TotalCalls] = [TotalCalls] + 1,
+            [SuccessfulCalls] = [SuccessfulCalls] + CASE WHEN @IsSuccess = 1 THEN 1 ELSE 0 END,
+            [FailedCalls] = [FailedCalls] + CASE WHEN @IsSuccess = 0 THEN 1 ELSE 0 END,
+            [TotalResponseTimeMs] = [TotalResponseTimeMs] + @ResponseTimeMs,
+            [MinResponseTimeMs] = CASE 
+                WHEN [MinResponseTimeMs] IS NULL OR @ResponseTimeMs < [MinResponseTimeMs] 
+                THEN @ResponseTimeMs 
+                ELSE [MinResponseTimeMs] 
+            END,
+            [MaxResponseTimeMs] = CASE 
+                WHEN [MaxResponseTimeMs] IS NULL OR @ResponseTimeMs > [MaxResponseTimeMs] 
+                THEN @ResponseTimeMs 
+                ELSE [MaxResponseTimeMs] 
+            END,
+            [CreatedOn] = GETUTCDATE()
+    WHEN NOT MATCHED THEN
+        INSERT (ServiceProviderId, MetricDate, HourOfDay, TotalCalls, 
+                SuccessfulCalls, FailedCalls, TotalResponseTimeMs, 
+                MinResponseTimeMs, MaxResponseTimeMs)
+        VALUES (source.ServiceProviderId, source.MetricDate, source.HourOfDay, 
+                1, 
+                CASE WHEN @IsSuccess = 1 THEN 1 ELSE 0 END,
+                CASE WHEN @IsSuccess = 0 THEN 1 ELSE 0 END,
+                @ResponseTimeMs,
+                @ResponseTimeMs,
+                @ResponseTimeMs);
+
+    -- Manejar Circuit Breaker si la llamada falló
+    IF @IsSuccess = 0
+    BEGIN
+        UPDATE [ExternalServices].[CircuitBreakerState]
+        SET 
+            [FailureCount] = [FailureCount] + 1,
+            [LastFailure] = GETUTCDATE(),
+            [ConsecutiveSuccesses] = 0,
+            [ModifiedOn] = GETUTCDATE()
+        WHERE [ServiceProviderId] = @ServiceProviderId
+            AND [CompanyCodeId] = ISNULL(@CompanyCodeId, 0);
+
+        -- Si no existe registro, crear uno
+        IF @@ROWCOUNT = 0
+        BEGIN
+            INSERT INTO [ExternalServices].[CircuitBreakerState]
+                (ServiceProviderId, CompanyCodeId, State, FailureCount, LastFailure)
+            VALUES (@ServiceProviderId, ISNULL(@CompanyCodeId, 0), 'Closed', 1, GETUTCDATE());
+        END
+    END
+    ELSE
+    BEGIN
+        -- Reiniciar contador de fallas en éxito
+        UPDATE [ExternalServices].[CircuitBreakerState]
+        SET 
+            [FailureCount] = 0,
+            [ConsecutiveSuccesses] = [ConsecutiveSuccesses] + 1,
+            [ModifiedOn] = GETUTCDATE()
+        WHERE [ServiceProviderId] = @ServiceProviderId
+            AND [CompanyCodeId] = ISNULL(@CompanyCodeId, 0);
+    END
+
+    COMMIT TRANSACTION;
+
+    SELECT @LogId AS LogId;
+END;
+GO
+
+-- Procedimiento para obtener proveedor activo por tipo de servicio
+IF OBJECT_ID('[ExternalServices].[usp_GetActiveServiceProvider]', 'P') IS NOT NULL
+    DROP PROCEDURE [ExternalServices].[usp_GetActiveServiceProvider];
+GO
+
+CREATE PROCEDURE [ExternalServices].[usp_GetActiveServiceProvider]
+    @ServiceType NVARCHAR(50),
+    @CompanyCodeId INT = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        sp.Id AS ServiceProviderId,
+        sp.ProviderCode,
+        sp.ProviderName,
+        sp.BaseUrl,
+        sp.AuthenticationType,
+        sp.TimeoutMs,
+        ac.Id AS ApiConfigurationId,
+        ac.ConfigurationName,
+        ac.Settings AS ConfigurationSettings,
+        ac.CustomHeaders,
+        at.Id AS ApiTokenId,
+        at.ApiKey,
+        at.AccessToken,
+        at.SecretKey,
+        sp.Priority,
+        sp.SuccessRate,
+        sp.AvgResponseTimeMs,
+        cbs.State AS CircuitBreakerState,
+        cbs.NextAttempt
+    FROM [ExternalServices].[ServiceProviders] sp
+    INNER JOIN [ExternalServices].[ApiConfigurations] ac 
+        ON sp.Id = ac.ServiceProviderId
+        AND ac.IsActive = 1
+        AND (ac.CompanyCodeId = @CompanyCodeId OR ac.CompanyCodeId = 0)
+        AND (ac.ValidFrom IS NULL OR ac.ValidFrom <= GETUTCDATE())
+        AND (ac.ValidTo IS NULL OR ac.ValidTo >= GETUTCDATE())
+    LEFT JOIN [ExternalServices].[ApiTokens] at 
+        ON ac.Id = at.ApiConfigurationId
+        AND at.IsActive = 1
+        AND (at.ValidFrom IS NULL OR at.ValidFrom <= GETUTCDATE())
+        AND (at.ValidTo IS NULL OR at.ValidTo >= GETUTCDATE())
+    LEFT JOIN [ExternalServices].[CircuitBreakerState] cbs 
+        ON sp.Id = cbs.ServiceProviderId
+        AND cbs.CompanyCodeId = @CompanyCodeId
+    WHERE sp.ServiceType = @ServiceType
+        AND sp.IsActive = 1
+        AND (cbs.State IS NULL OR cbs.State = 'Closed' OR 
+            (cbs.State = 'Open' AND cbs.NextAttempt <= GETUTCDATE()))
+    ORDER BY 
+        ac.Priority ASC,
+        sp.Priority ASC,
+        sp.SuccessRate DESC,
+        sp.AvgResponseTimeMs ASC;
+END;
+GO
+
+-- Procedimiento para limpieza de logs antiguos
+IF OBJECT_ID('[ExternalServices].[usp_CleanupOldLogs]', 'P') IS NOT NULL
+    DROP PROCEDURE [ExternalServices].[usp_CleanupOldLogs];
+GO
+
+CREATE PROCEDURE [ExternalServices].[usp_CleanupOldLogs]
+    @RetentionDays INT = 90,
+    @BatchSize INT = 5000
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @DeletedRows INT = 0;
+    DECLARE @TotalDeleted BIGINT = 0;
+    DECLARE @CutoffDate DATETIME2 = DATEADD(DAY, -@RetentionDays, GETUTCDATE());
+
+    PRINT 'Iniciando limpieza de logs anteriores a: ' + CONVERT(VARCHAR, @CutoffDate, 120);
+
+    -- Eliminar en lotes para evitar bloqueos
+    WHILE 1 = 1
+    BEGIN
+        DELETE TOP (@BatchSize) 
+        FROM [ExternalServices].[ApiCallLogs]
+        WHERE [CreatedOn] < @CutoffDate;
+
+        SET @DeletedRows = @@ROWCOUNT;
+        SET @TotalDeleted = @TotalDeleted + @DeletedRows;
+
+        IF @DeletedRows = 0
+            BREAK;
+
+        WAITFOR DELAY '00:00:01'; -- Pausa de 1 segundo entre lotes
+    END
+
+    -- Limpiar validaciones de documentos en caché expiradas
+    DELETE FROM [ExternalServices].[DocumentValidations]
+    WHERE [IsCached] = 1 
+        AND [CacheExpiryDate] < GETUTCDATE();
+
+    SET @DeletedRows = @@ROWCOUNT;
+    SET @TotalDeleted = @TotalDeleted + @DeletedRows;
+
+    PRINT 'Limpieza completada. Total registros eliminados: ' + CAST(@TotalDeleted AS NVARCHAR);
+    
+    -- Retornar estadísticas
+    SELECT 
+        @TotalDeleted AS TotalDeleted,
+        @RetentionDays AS RetentionDays,
+        GETUTCDATE() AS CleanupDate;
+END;
+GO
+
+PRINT '✅ Procedimientos almacenados creados exitosamente';
+PRINT '';
+
+-- ====================================================================
+-- 12. VISTAS PARA REPORTES Y DASHBOARDS
+-- ====================================================================
+
+-- Vista para dashboard de APIs
+IF OBJECT_ID('[ExternalServices].[vApiMetricsDashboard]', 'V') IS NOT NULL
+    DROP VIEW [ExternalServices].[vApiMetricsDashboard];
+GO
+
+CREATE VIEW [ExternalServices].[vApiMetricsDashboard]
+AS
+SELECT 
+    sp.ProviderName,
+    sp.ServiceType,
+    sp.IsActive,
+    sp.SuccessRate,
+    sp.AvgResponseTimeMs,
+    sp.TotalCalls,
+    sp.SuccessfulCalls,
+    sp.FailedCalls,
+    sp.LastCallDate,
+    COUNT(DISTINCT ac.Id) AS ActiveConfigurations,
+    COUNT(DISTINCT at.Id) AS ActiveTokens,
+    SUM(at.AvailableCredits) AS TotalAvailableCredits,
+    SUM(at.TotalConsumed) AS TotalCreditsConsumed,
+    (SELECT COUNT(*) FROM [ExternalServices].[ApiCallLogs] acl 
+        WHERE acl.ApiConfigurationId IN (SELECT Id FROM [ExternalServices].[ApiConfigurations] 
+                                        WHERE ServiceProviderId = sp.Id)
+        AND acl.CreatedOn >= DATEADD(HOUR, -24, GETUTCDATE())) AS CallsLast24H,
+    (SELECT AVG(ResponseTimeMs) FROM [ExternalServices].[ApiCallLogs] acl 
+        WHERE acl.ApiConfigurationId IN (SELECT Id FROM [ExternalServices].[ApiConfigurations] 
+                                        WHERE ServiceProviderId = sp.Id)
+        AND acl.CreatedOn >= DATEADD(HOUR, -1, GETUTCDATE())) AS AvgResponseTimeLastHour
+FROM [ExternalServices].[ServiceProviders] sp
+LEFT JOIN [ExternalServices].[ApiConfigurations] ac 
+    ON sp.Id = ac.ServiceProviderId 
+    AND ac.IsActive = 1
+LEFT JOIN [ExternalServices].[ApiTokens] at 
+    ON ac.Id = at.ApiConfigurationId 
+    AND at.IsActive = 1
+GROUP BY 
+    sp.Id, sp.ProviderName, sp.ServiceType, sp.IsActive, 
+    sp.SuccessRate, sp.AvgResponseTimeMs, sp.TotalCalls,
+    sp.SuccessfulCalls, sp.FailedCalls, sp.LastCallDate;
+GO
+
+-- Vista para monitoreo de créditos
+IF OBJECT_ID('[ExternalServices].[vTokenCreditsMonitor]', 'V') IS NOT NULL
+    DROP VIEW [ExternalServices].[vTokenCreditsMonitor];
+GO
+
+CREATE VIEW [ExternalServices].[vTokenCreditsMonitor]
+AS
+SELECT 
+    sp.ProviderName,
+    ac.ConfigurationName,
+    cc.CompanyCode,
+    at.Email,
+    at.AvailableCredits,
+    at.TotalConsumed,
+    at.CreditsAlertThreshold,
+    at.ValidFrom,
+    at.ValidTo,
+    at.IsActive,
+    at.IsLicensed,
+    DATEDIFF(DAY, GETUTCDATE(), at.ValidTo) AS DaysUntilExpiry,
+    CASE 
+        WHEN at.AvailableCredits <= at.CreditsAlertThreshold THEN 'CRITICAL'
+        WHEN at.AvailableCredits <= at.CreditsAlertThreshold * 2 THEN 'WARNING'
+        ELSE 'NORMAL'
+    END AS CreditStatus,
+    CASE 
+        WHEN at.ValidTo IS NULL THEN 'NO_EXPIRY'
+        WHEN at.ValidTo < GETUTCDATE() THEN 'EXPIRED'
+        WHEN DATEDIFF(DAY, GETUTCDATE(), at.ValidTo) <= 7 THEN 'EXPIRING_SOON'
+        ELSE 'VALID'
+    END AS ExpiryStatus
+FROM [ExternalServices].[ApiTokens] at
+INNER JOIN [ExternalServices].[ApiConfigurations] ac 
+    ON at.ApiConfigurationId = ac.Id
+INNER JOIN [ExternalServices].[ServiceProviders] sp 
+    ON ac.ServiceProviderId = sp.Id
+LEFT JOIN [master].[CompanyCodes] cc 
+    ON ac.CompanyCodeId = cc.CompanyCodeId
+WHERE at.IsActive = 1;
+GO
+
+-- Vista para reporte de consumo por empresa
+IF OBJECT_ID('[ExternalServices].[vCompanyApiConsumption]', 'V') IS NOT NULL
+    DROP VIEW [ExternalServices].[vCompanyApiConsumption];
+GO
+
+    CREATE VIEW [ExternalServices].[vCompanyApiConsumption]
+    WITH SCHEMABINDING
+    AS
+    SELECT 
+        cc.CompanyCodeId,
+        cc.CompanyCode,
+        cc.LegalName,
+        sp.ServiceType,
+        COUNT_BIG(*) AS TotalCalls,
+        SUM(CASE WHEN acl.IsSuccess = 1 THEN 1 ELSE 0 END) AS SuccessfulCalls,
+        SUM(CASE WHEN acl.IsSuccess = 0 THEN 1 ELSE 0 END) AS FailedCalls,
+        AVG(CAST(acl.ResponseTimeMs AS DECIMAL(10,2))) AS AvgResponseTime,
+        SUM(acl.Cost) AS TotalCost,
+        COUNT(DISTINCT acl.ApiConfigurationId) AS ActiveConfigurations,
+        MAX(acl.CreatedOn) AS LastCallDate
+    FROM [ExternalServices].[ApiCallLogs] acl
+    INNER JOIN [ExternalServices].[ApiConfigurations] ac 
+        ON acl.ApiConfigurationId = ac.Id
+    INNER JOIN [ExternalServices].[ServiceProviders] sp 
+        ON ac.ServiceProviderId = sp.Id
+    INNER JOIN [master].[CompanyCodes] cc 
+        ON ac.CompanyCodeId = cc.CompanyCodeId
+    WHERE acl.CreatedOn >= DATEADD(MONTH, -1, GETUTCDATE())
+    GROUP BY 
+        cc.CompanyCodeId, cc.CompanyCode, cc.LegalName, sp.ServiceType;
+    GO
+
+    PRINT '✅ Vistas creadas exitosamente';
+    PRINT '';
+
+
+-- ====================================================================
+-- 13. FUNCIONES ÚTILES
+-- ====================================================================
+
+    -- Función para validar formato de DNI/RUC peruano
+    IF OBJECT_ID('[ExternalServices].[fn_ValidatePeruvianDocument]', 'FN') IS NOT NULL
+        DROP FUNCTION [ExternalServices].[fn_ValidatePeruvianDocument];
+    GO
+
+    CREATE FUNCTION [ExternalServices].[fn_ValidatePeruvianDocument]
+    (
+        @DocumentType NVARCHAR(10),
+        @DocumentNumber NVARCHAR(20)
+    )
+    RETURNS BIT
+    AS
+    BEGIN
+        DECLARE @IsValid BIT = 0;
+
+        IF @DocumentType = 'DNI'
+        BEGIN
+            -- DNI: 8 dígitos numéricos
+            IF LEN(@DocumentNumber) = 8 
+                AND @DocumentNumber NOT LIKE '%[^0-9]%'
+                AND @DocumentNumber != '00000000'
+            BEGIN
+                SET @IsValid = 1;
+            END
+        END
+        ELSE IF @DocumentType = 'RUC'
+        BEGIN
+            -- RUC: 11 dígitos numéricos, empieza con 10, 15, 17, 20
+            IF LEN(@DocumentNumber) = 11 
+                AND @DocumentNumber NOT LIKE '%[^0-9]%'
+                AND LEFT(@DocumentNumber, 2) IN ('10', '15', '17', '20')
+                AND @DocumentNumber != '00000000000'
+            BEGIN
+                SET @IsValid = 1;
+            END
+        END
+        ELSE IF @DocumentType = 'CE'
+        BEGIN
+            -- Carné de extranjería: 9 o 12 dígitos
+            IF (LEN(@DocumentNumber) = 9 OR LEN(@DocumentNumber) = 12)
+                AND @DocumentNumber NOT LIKE '%[^0-9]%'
+            BEGIN
+                SET @IsValid = 1;
+            END
+        END
+
+        RETURN @IsValid;
+    END;
+    GO
+
+    -- Función para obtener datos de documento desde caché
+    IF OBJECT_ID('[ExternalServices].[fn_GetCachedDocument]', 'FN') IS NOT NULL
+        DROP FUNCTION [ExternalServices].[fn_GetCachedDocument];
+    GO
+
+    CREATE FUNCTION [ExternalServices].[fn_GetCachedDocument]
+    (
+        @DocumentType NVARCHAR(10),
+        @DocumentNumber NVARCHAR(20)
+    )
+    RETURNS TABLE
+    AS
+    RETURN
+    (
+        SELECT TOP 1
+            [DocumentType],
+            [DocumentNumber],
+            [FirstLastName],
+            [SecondLastName],
+            [FirstNames],
+            [FullName],
+            [BusinessName],
+            [TradeName],
+            [Status],
+            [Condition],
+            [Address],
+            [UbigeoCode],
+            [Department],
+            [Province],
+            [District],
+            [ValidationProvider],
+            [ValidationDate],
+            [IsValid],
+            [ConfidenceScore],
+            [AdditionalData]
+        FROM [ExternalServices].[DocumentValidations]
+        WHERE [DocumentType] = @DocumentType
+            AND [DocumentNumber] = @DocumentNumber
+            AND [IsCached] = 1
+            AND ([CacheExpiryDate] IS NULL OR [CacheExpiryDate] > GETUTCDATE())
+        ORDER BY [ValidationDate] DESC
+    );
+    GO
+
+    PRINT '✅ Funciones creadas exitosamente';
+    PRINT '';
+
+
+-- ====================================================================
+-- 14. TRIGGERS PARA INTEGRIDAD DE DATOS
+-- ====================================================================
+    -- Trigger para actualizar fecha de modificación automáticamente
+    IF OBJECT_ID('[ExternalServices].[trg_UpdateModifiedOn]', 'TR') IS NOT NULL
+        DROP TRIGGER [ExternalServices].[trg_UpdateModifiedOn];
+    GO
+
+    CREATE TRIGGER [ExternalServices].[trg_UpdateModifiedOn]
+    ON [ExternalServices].[ServiceProviders]
+    AFTER UPDATE
+    AS
+    BEGIN
+        SET NOCOUNT ON;
+
+        IF NOT UPDATE(ModifiedOn)
+        BEGIN
+            UPDATE sp
+            SET ModifiedOn = GETUTCDATE()
+            FROM [ExternalServices].[ServiceProviders] sp
+            INNER JOIN inserted i ON sp.Id = i.Id;
+        END
+    END;
+    GO
+
+    -- Trigger similar para otras tablas
+    IF OBJECT_ID('[ExternalServices].[trg_UpdateModifiedOn_ApiConfigurations]', 'TR') IS NOT NULL
+        DROP TRIGGER [ExternalServices].[trg_UpdateModifiedOn_ApiConfigurations];
+    GO
+
+    CREATE TRIGGER [ExternalServices].[trg_UpdateModifiedOn_ApiConfigurations]
+    ON [ExternalServices].[ApiConfigurations]
+    AFTER UPDATE
+    AS
+    BEGIN
+        SET NOCOUNT ON;
+
+        IF NOT UPDATE(ModifiedOn)
+        BEGIN
+            UPDATE ac
+            SET ModifiedOn = GETUTCDATE()
+            FROM [ExternalServices].[ApiConfigurations] ac
+            INNER JOIN inserted i ON ac.Id = i.Id;
+        END
+    END;
+    GO
+
+    PRINT '✅ Triggers creados exitosamente';
+    PRINT '';
+
+-- ====================================================================
+-- 15. SEGURIDAD: PERMISOS Y ROLES
+-- ====================================================================
+
+    -- Crear roles específicos para el schema
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'ExternalServices_Admin')
+    BEGIN
+        CREATE ROLE [ExternalServices_Admin];
+        PRINT '✅ Rol [ExternalServices_Admin] creado';
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'ExternalServices_User')
+    BEGIN
+        CREATE ROLE [ExternalServices_User];
+        PRINT '✅ Rol [ExternalServices_User] creado';
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'ExternalServices_ReadOnly')
+    BEGIN
+        CREATE ROLE [ExternalServices_ReadOnly];
+        PRINT '✅ Rol [ExternalServices_ReadOnly] creado';
+    END
+
+    -- Otorgar permisos al rol Admin
+    GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE 
+    ON SCHEMA::[ExternalServices] TO [ExternalServices_Admin];
+
+    -- Otorgar permisos al rol User
+    GRANT SELECT, INSERT, EXECUTE 
+    ON SCHEMA::[ExternalServices] TO [ExternalServices_User];
+
+    -- Permisos específicos para User
+    GRANT UPDATE ON [ExternalServices].[ApiTokens] TO [ExternalServices_User];
+    GRANT UPDATE ON [ExternalServices].[ApiConfigurations] TO [ExternalServices_User];
+
+    -- Otorgar permisos al rol ReadOnly
+    GRANT SELECT 
+    ON SCHEMA::[ExternalServices] TO [ExternalServices_ReadOnly];
+
+    -- Permisos específicos en vistas
+    GRANT SELECT ON [ExternalServices].[vApiMetricsDashboard] TO [ExternalServices_ReadOnly];
+    GRANT SELECT ON [ExternalServices].[vTokenCreditsMonitor] TO [ExternalServices_ReadOnly];
+    GRANT SELECT ON [ExternalServices].[vCompanyApiConsumption] TO [ExternalServices_ReadOnly];
+
+    PRINT '✅ Permisos otorgados a roles del schema ExternalServices';
+
+    PRINT '✅ Configuración de seguridad completada';
+    PRINT '';
+
+-- ====================================================================
+-- 16. DATOS INICIALES (SEED DATA)
+-- ====================================================================
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    -- Insertar proveedores de servicios comunes
+    IF NOT EXISTS (SELECT 1 FROM [ExternalServices].[ServiceProviders] WHERE ProviderCode = 'SUNAT_API')
+    BEGIN
+        INSERT INTO [ExternalServices].[ServiceProviders] (
+            [ProviderCode], [ProviderName], [ServiceType], [BaseUrl],
+            [DocumentationUrl], [Priority], [IsActive], [AuthenticationType],
+            [TimeoutMs], [MaxRetryAttempts]
+        ) VALUES 
+        ('SUNAT_API', 'SUNAT - Servicio de Validación RUC', 'TaxValidation', 
+         'https://api.sunat.com.pe/v1/', 'https://api.sunat.com.pe/docs', 1, 1, 
+         'API_KEY', 15000, 3),
+        
+        ('RENIEC_API', 'RENIEC - Consulta DNI', 'DocumentValidation', 
+         'https://api.reniec.gob.pe/v1/', 'https://api.reniec.gob.pe/docs', 1, 1, 
+         'OAUTH2', 10000, 3),
+        
+        ('ZEROBOUNCE', 'ZeroBounce - Validación de Email', 'EmailValidation', 
+         'https://api.zerobounce.net/v2/', 'https://www.zerobounce.net/docs/', 1, 1, 
+         'API_KEY', 5000, 2),
+        
+        ('TWILIO', 'Twilio - SMS y WhatsApp', 'Messaging', 
+         'https://api.twilio.com/2010-04-01/', 'https://www.twilio.com/docs', 1, 1, 
+         'BASIC', 10000, 3),
+        
+        ('SENDGRID', 'SendGrid - Envío de Emails', 'EmailService', 
+         'https://api.sendgrid.com/v3/', 'https://docs.sendgrid.com/', 1, 1, 
+         'BEARER_TOKEN', 8000, 2),
+        
+        ('GOOGLE_MAPS', 'Google Maps API', 'Geocoding', 
+         'https://maps.googleapis.com/maps/api/', 'https://developers.google.com/maps', 2, 1, 
+         'API_KEY', 5000, 2),
+        
+        ('OPENWEATHER', 'OpenWeather API', 'Weather', 
+         'https://api.openweathermap.org/data/2.5/', 'https://openweathermap.org/api', 3, 1, 
+         'API_KEY', 3000, 2);
+
+        PRINT '✅ Datos iniciales de ServiceProviders insertados';
+    END
+
+    -- Insertar ubigeos de ejemplo (Lima, Arequipa, Cusco)
+    IF NOT EXISTS (SELECT 1 FROM [master].[Ubigeos] WHERE CodeSunat = '150101')
+    BEGIN
+        INSERT INTO [master].[Ubigeos] (
+            [CodeSunat], [CodeReniec], [Department], [Province], [District],
+            [Latitude], [Longitude], [Population], [AreaKm2], [IsCapital],
+            [UbigeoType], [Category], [UrbanPercentage], [ValidFrom]
+        ) VALUES 
+        -- Ejemplos donde los códigos COINCIDEN
+        ('150101', '150101', 'Lima', 'Lima', 'Lima', 
+         -12.046374, -77.042793, 9750000, 2672.3, 1,
+         'DISTRICT', 'METROPOLITANO', 100.00, '2000-01-01'),
+        
+        ('040101', '040101', 'Arequipa', 'Arequipa', 'Arequipa',
+         -16.409047, -71.537451, 1008290, 69.8, 1,
+         'DISTRICT', 'URBANO', 95.50, '2000-01-01'),
+        
+        -- Ejemplos donde los códigos NO COINCIDEN (casos reales)
+        ('080101', '080102', 'Cusco', 'Cusco', 'Cusco',  -- Diferencia común
+         -13.531950, -71.967463, 428450, 70.0, 1,
+         'DISTRICT', 'URBANO', 92.30, '2000-01-01'),
+        
+        ('130101', '130102', 'La Libertad', 'Trujillo', 'Trujillo',
+         -8.109052, -79.021534, 919899, 39.4, 1,
+         'DISTRICT', 'URBANO', 94.80, '2000-01-01'),
+        
+        -- Ejemplo de distrito inactivo en SUNAT pero activo en RENIEC
+        ('999999', '150132', 'Lima', 'Lima', 'San Juan de Lurigancho',
+         -11.9900, -76.9900, 1200000, 131.2, 0,
+         'DISTRICT', 'URBANO', 98.50, '2000-01-01');
+        
+        -- Actualizar notas de mapeo para los que no coinciden
+        UPDATE [master].[Ubigeos]
+        SET [MappingNotes] = 'Códigos diferentes entre sistemas. SUNAT usa código histórico.'
+        WHERE [CodesMatch] = 0;
+        
+        PRINT '✅ ' + CAST(@@ROWCOUNT AS NVARCHAR) + ' registros de Ubigeos insertados';
+    END
+
+    COMMIT TRANSACTION;
+
+    PRINT '✅ Datos iniciales insertados exitosamente';
+    PRINT '';
+
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+    DECLARE @ErrorState INT = ERROR_STATE();
+
+    PRINT '❌ ERROR durante la inserción de datos iniciales:';
+    PRINT '   Mensaje: ' + @ErrorMessage;
+    PRINT '   Severidad: ' + CAST(@ErrorSeverity AS NVARCHAR);
+    PRINT '   Estado: ' + CAST(@ErrorState AS NVARCHAR);
+
+    THROW;
+END CATCH;
+GO
+
+-- ====================================================================
+-- 17. JOB DE MANTENIMIENTO AUTOMÁTICO
+-- ====================================================================
+PRINT '📋 Configuración de Mantenimiento Programado...';
+PRINT '';
+PRINT '⚠️  Para configurar el Job de SQL Server Agent, ejecutar:';
+PRINT '';
+PRINT '   EXEC [ExternalServices].[usp_CleanupOldLogs] @RetentionDays = 90, @BatchSize = 10000;';
+PRINT '';
+PRINT '   📅 Recomendado: Ejecutar diariamente a las 02:00 AM';
+PRINT '';
+
+-- ====================================================================
+-- VERIFICACIÓN FINAL
+-- ====================================================================
+PRINT '🔍 Verificando objetos creados...';
+PRINT '';
+
+SELECT 
+    SCHEMA_NAME(schema_id) AS SchemaName,
+    name AS ObjectName,
+    type_desc AS ObjectType,
+    create_date AS CreatedDate
+FROM sys.objects
+WHERE schema_id = SCHEMA_ID('ExternalServices')
+    AND type IN ('U', 'P', 'V', 'FN', 'TR')
+ORDER BY 
+    CASE type
+        WHEN 'U' THEN 1
+        WHEN 'P' THEN 2
+        WHEN 'V' THEN 3
+        WHEN 'FN' THEN 4
+        WHEN 'TR' THEN 5
+        ELSE 6
+    END,
+    name;
+
+PRINT '';
+PRINT '====================================================================';
+PRINT '✅ SCRIPT COMPLETADO EXITOSAMENTE';
+PRINT '====================================================================';
+PRINT '📊 Resumen de objetos creados:';
+PRINT '   • Schema: ExternalServices';
+PRINT '   • Tablas: 8 (en ExternalServices)';
+PRINT '   • Tablas: 1 (en master - Ubigeos)';
+PRINT '   • Procedimientos almacenados: 3';
+PRINT '   • Vistas: 3';
+PRINT '   • Funciones: 2';
+PRINT '   • Triggers: 2';
+PRINT '   • Roles de seguridad: 3';
+PRINT '====================================================================';
+PRINT '🎯 Próximos pasos recomendados:';
+PRINT '   1. Configurar conexión en appsettings.json';
+PRINT '   2. Implementar encriptación de tokens en C#';
+PRINT '   3. Configurar jobs de mantenimiento en SQL Agent';
+PRINT '   4. Crear interfaces en .NET 8.0';
+PRINT '   5. Configurar conexión a APIs externas';
+PRINT '====================================================================';
