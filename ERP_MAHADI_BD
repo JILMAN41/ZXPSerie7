@@ -748,23 +748,187 @@ GO
 
 
 -- 5.10 PASSWORD POLICIES (Políticas enterprise)
+/* =========================================================
+   1) Tabla consolidada: security.PasswordPolicies
+   ========================================================= */
 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'PasswordPolicies' AND schema_id = SCHEMA_ID(N'security'))
 BEGIN
-    CREATE TABLE [security].[PasswordPolicies](
-        [PolicyId]                  INT IDENTITY(1,1) PRIMARY KEY,
-        [CompanyCode]               CHAR(4) NULL,
-        [MinLength]                 INT NOT NULL DEFAULT 12,
-        [RequireUppercase]          BIT NOT NULL DEFAULT 1,
-        [RequireLowercase]          BIT NOT NULL DEFAULT 1,
-        [RequireDigit]              BIT NOT NULL DEFAULT 1,
-        [RequireSpecialChar]        BIT NOT NULL DEFAULT 1,
-        [MaxFailedAttempts]         INT NOT NULL DEFAULT 3,
-        [LockoutDurationMinutes]    INT NOT NULL DEFAULT 60,
-        [PasswordExpiryDays]        INT NOT NULL DEFAULT 45,
-        [CannotReuseLast]           INT NOT NULL DEFAULT 10,
-        [CreatedOn]                 DATETIME2 NOT NULL DEFAULT GETUTCDATE()
-    );
+	CREATE TABLE [security].[PasswordPolicies](
+	[PolicyId]               int IDENTITY(1,1) NOT NULL,
+	[PolicyName]             nvarchar(100) NOT NULL,
+	[Description]            nvarchar(500) NULL,
+
+	-- Scope (1 sola activa por scope)
+	[AppliesTo]              varchar(20) NOT NULL,      -- ALL_USERS | COMPANY | ROLE
+	[CompanyCode]            char(4) NULL,
+	[RoleId]                 int NULL,
+
+	-- Rules
+	[MinLength]              int NOT NULL,
+	[RequireUppercase]       bit NOT NULL,
+	[RequireLowercase]       bit NOT NULL,
+	[RequireDigit]           bit NOT NULL,
+	[RequireSpecialChar]     bit NOT NULL,
+
+	[MaxFailedAttempts]      int NOT NULL,
+	[LockoutDurationMinutes] int NOT NULL,
+
+	[PasswordExpiryDays]     int NOT NULL,
+	[CannotReuseLast]        int NOT NULL,
+
+	-- Extra enterprise
+	[AllowCommonPasswords]   bit NOT NULL,
+	[ComplexityRegex]        nvarchar(200) NULL,
+	[Comment]                nvarchar(500) NULL,
+	[IsActive]               bit NOT NULL,
+
+	-- Auditoría
+	[CreatedOn]              datetime2(7) NOT NULL,
+
+	CONSTRAINT [PK_PasswordPolicies]
+		PRIMARY KEY CLUSTERED ([PolicyId] ASC)
+		WITH (FILLFACTOR = 85)
+	) ON [PRIMARY];
+
+	/* =========================================================
+	2) Default constraints
+	========================================================= */
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_PolicyName]
+	DEFAULT (N'Default') FOR [PolicyName];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_AppliesTo]
+	DEFAULT ('ALL_USERS') FOR [AppliesTo];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_MinLength]
+	DEFAULT ((12)) FOR [MinLength];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_RequireUppercase]
+	DEFAULT ((1)) FOR [RequireUppercase];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_RequireLowercase]
+	DEFAULT ((1)) FOR [RequireLowercase];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_RequireDigit]
+	DEFAULT ((1)) FOR [RequireDigit];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_RequireSpecialChar]
+	DEFAULT ((1)) FOR [RequireSpecialChar];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_MaxFailedAttempts]
+	DEFAULT ((3)) FOR [MaxFailedAttempts];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_LockoutDurationMinutes]
+	DEFAULT ((60)) FOR [LockoutDurationMinutes];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_PasswordExpiryDays]
+	DEFAULT ((45)) FOR [PasswordExpiryDays];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_CannotReuseLast]
+	DEFAULT ((10)) FOR [CannotReuseLast];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_AllowCommonPasswords]
+	DEFAULT ((0)) FOR [AllowCommonPasswords];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_IsActive]
+	DEFAULT ((1)) FOR [IsActive];
+
+	ALTER TABLE [security].[PasswordPolicies]
+	ADD CONSTRAINT [DF_PasswordPolicies_CreatedOn]
+	DEFAULT (SYSUTCDATETIME()) FOR [CreatedOn];
+
+	/* =========================================================
+	3) FKs
+	========================================================= */
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [FK_PasswordPolicies_CompanyCodes]
+	FOREIGN KEY ([CompanyCode])
+	REFERENCES [master].[CompanyCodes]([CompanyCode]);
+
+	ALTER TABLE [security].[PasswordPolicies] CHECK CONSTRAINT [FK_PasswordPolicies_CompanyCodes];
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [FK_PasswordPolicies_Roles]
+	FOREIGN KEY ([RoleId])
+	REFERENCES [security].[Roles]([RoleId]);
+
+	ALTER TABLE [security].[PasswordPolicies] CHECK CONSTRAINT [FK_PasswordPolicies_Roles];
+
+	/* =========================================================
+	4) CHECK constraints (scope + rangos)
+	========================================================= */
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_AppliesTo]
+	CHECK ([AppliesTo] IN ('ALL_USERS','COMPANY','ROLE'));
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_Scope]
+	CHECK (
+	([AppliesTo] = 'ALL_USERS' AND [CompanyCode] IS NULL AND [RoleId] IS NULL)
+	OR
+	([AppliesTo] = 'COMPANY'   AND [CompanyCode] IS NOT NULL AND [RoleId] IS NULL)
+	OR
+	([AppliesTo] = 'ROLE'      AND [RoleId] IS NOT NULL AND [CompanyCode] IS NULL)
+	);
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_MinLength]
+	CHECK ([MinLength] BETWEEN 6 AND 128);
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_MaxFailedAttempts]
+	CHECK ([MaxFailedAttempts] BETWEEN 0 AND 20);
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_LockoutDurationMinutes]
+	CHECK ([LockoutDurationMinutes] BETWEEN 0 AND 1440);
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_PasswordExpiryDays]
+	CHECK ([PasswordExpiryDays] BETWEEN 0 AND 3650);
+
+	ALTER TABLE [security].[PasswordPolicies] WITH CHECK
+	ADD CONSTRAINT [CK_PasswordPolicies_CannotReuseLast]
+	CHECK ([CannotReuseLast] BETWEEN 0 AND 50);
+
+	/* =========================================================
+	5) Índices (garantizar 1 activa por scope)
+	========================================================= */
+	CREATE UNIQUE INDEX [UX_PasswordPolicies_AllUsers_Active]
+	ON [security].[PasswordPolicies]([AppliesTo])
+	WHERE [AppliesTo] = 'ALL_USERS' AND [IsActive] = 1
+	WITH (FILLFACTOR = 90);
+
+	CREATE UNIQUE INDEX [UX_PasswordPolicies_Company_Active]
+	ON [security].[PasswordPolicies]([CompanyCode])
+	WHERE [AppliesTo] = 'COMPANY' AND [IsActive] = 1 AND [CompanyCode] IS NOT NULL
+	WITH (FILLFACTOR = 90);
+
+	CREATE UNIQUE INDEX [UX_PasswordPolicies_Role_Active]
+	ON [security].[PasswordPolicies]([RoleId])
+	WHERE [AppliesTo] = 'ROLE' AND [IsActive] = 1 AND [RoleId] IS NOT NULL
+	WITH (FILLFACTOR = 90);
+
+	CREATE INDEX [IX_PasswordPolicies_Lookup]
+	ON [security].[PasswordPolicies]([AppliesTo], [CompanyCode], [RoleId], [IsActive])
+	WITH (FILLFACTOR = 90);
     PRINT '>> Tabla [security].[PasswordPolicies] creada.';
+END
+ELSE
+BEGIN
+    PRINT '>> La tabla [security].[PasswordPolicies] ya existe. No se realizaron cambios.';
 END
 GO
 
